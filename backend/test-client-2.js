@@ -19,9 +19,32 @@ socket.on("connect", () => {
 
 socket.on("nearbyUsers", (nearbyUsers) => {
     console.log("Nearby users:", nearbyUsers);
-    socket.disconnect();
+});
+
+// Receive avatar movement from another user
+socket.on("avatarMoved", (data) => {
+    console.log("Avatar movement received:", data);
 });
 
 socket.on("connect_error", (error) => {
     console.log("Connection failed:", error.message);
+});
+// Receive WebRTC offer
+socket.on("webrtc-offer", (data) => {
+    console.log("WebRTC offer received:", data);
+
+    // Send test answer back to the first user
+    socket.emit("webrtc-answer", {
+        targetUserId: data.senderUserId,
+        answer: {
+            type: "answer",
+            sdp: "test-answer"
+        }
+    });
+
+    console.log("WebRTC test answer sent!");
+});
+// Receive ICE candidate
+socket.on("webrtc-ice-candidate", (data) => {
+    console.log("ICE candidate received:", data);
 });

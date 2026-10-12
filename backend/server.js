@@ -48,7 +48,67 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 
 io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
+        // WebRTC: Forward offer
+    socket.on("webrtc-offer", ({ targetUserId, offer }) => {
+        if (!targetUserId || !offer) return;
 
+        io.to(targetUserId).emit("webrtc-offer", {
+            senderUserId: socket.id,
+            offer
+        });
+
+        console.log("WebRTC offer sent to:", targetUserId);
+    });
+
+    // WebRTC: Forward answer
+    socket.on("webrtc-answer", ({ targetUserId, answer }) => {
+        if (!targetUserId || !answer) return;
+
+        io.to(targetUserId).emit("webrtc-answer", {
+            senderUserId: socket.id,
+            answer
+        });
+
+        console.log("WebRTC answer sent to:", targetUserId);
+    });
+
+    // WebRTC: Forward ICE candidate
+    socket.on("webrtc-ice-candidate", ({ targetUserId, candidate }) => {
+        if (!targetUserId || !candidate) return;
+
+        io.to(targetUserId).emit("webrtc-ice-candidate", {
+            senderUserId: socket.id,
+            candidate
+        });
+
+        console.log("ICE candidate sent to:", targetUserId);
+    });
+
+    // Handle avatar movement
+socket.on("moveAvatar", (position) => {
+    if (
+        !position ||
+        typeof position.x !== "number" ||
+        typeof position.y !== "number" ||
+        !Number.isFinite(position.x) ||
+        !Number.isFinite(position.y)
+    ) {
+        return;
+    }
+
+    // Send movement to other connected users
+    socket.broadcast.emit("avatarMoved", {
+        userId: socket.id,
+        x: position.x,
+        y: position.y
+    });
+
+    console.log("Avatar moved:", {
+        userId: socket.id,
+        x: position.x,
+        y: position.y
+    });
+});
     socket.on("shareLocation", (location) => {
         if (
             !location ||

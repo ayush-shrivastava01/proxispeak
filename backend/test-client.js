@@ -21,6 +21,36 @@ socket.on("connect", () => {
     console.log("Location sent:");
     console.log("Latitude:", location.latitude);
     console.log("Longitude:", location.longitude);
+
+    // Test avatar movement
+socket.emit("moveAvatar", {
+    x: 100,
+    y: 200
+});
+
+console.log("Avatar movement sent!");
+
+// Test WebRTC offer forwarding
+socket.emit("webrtc-offer", {
+    targetUserId: "w0HXZcoq8foUD1eWAAAD",
+    offer: {
+        type: "offer",
+        sdp: "test-offer"
+    }
+});
+
+console.log("WebRTC test offer sent!");
+// Send test ICE candidate to the second user
+socket.emit("webrtc-ice-candidate", {
+    targetUserId: "w0HXZcoq8foUD1eWAAAD",
+    candidate: {
+        candidate: "test-ice-candidate",
+        sdpMid: "0",
+        sdpMLineIndex: 0
+    }
+});
+
+console.log("WebRTC test ICE candidate sent!");
 });
 
 socket.on("nearbyUsers", (nearbyUsers) => {
@@ -39,4 +69,13 @@ socket.on("locationError", (error) => {
 
 socket.on("connect_error", (error) => {
     console.log("Connection failed:", error.message);
+});
+// Receive WebRTC answer
+socket.on("webrtc-answer", (data) => {
+    console.log("WebRTC answer received:", data);
+});
+
+// Receive ICE candidate
+socket.on("webrtc-ice-candidate", (data) => {
+    console.log("ICE candidate received:", data);
 });
