@@ -50,7 +50,35 @@ This project is being developed collaboratively by a team of five members.
 - Soumi Bera – Backend and Real-Time Communication
 - Shreya Bera – WebRTC and Audio
 - Aditya Kumar Mishra – Scaling and Persistence
+## Backend Implementation – Soumi Bera
 
+### Completed Backend Features
+
+- Set up the Node.js and Express.js backend server.
+- Configured Socket.IO for real-time communication.
+- Implemented real-time avatar movement broadcasting.
+- Implemented location sharing between connected users.
+- Added nearby user detection using geographical distance.
+- Implemented basic WebRTC signaling message relay for offers, answers, and ICE candidates.
+- Added socket disconnection handling and nearby user list updates.
+
+### Testing Status
+
+- Verified that the backend server starts successfully.
+- Tested real-time location sharing and nearby user detection using two clients.
+- Tested avatar movement broadcasting between connected clients.
+- Tested basic WebRTC offer and answer message relaying.
+- Tested sending an ICE candidate message.
+
+**Note:** Basic signaling message relaying has been tested. A complete WebRTC audio/video connection has not yet been verified.
+
+### Next Steps
+
+- Integrate the backend with the frontend.
+- Test real WebRTC audio communication between two browsers.
+- Verify ICE candidate exchange and connection establishment.
+- Implement distance-based audio attenuation.
+- Improve error handling and document real-time socket events.
 ## Project Status
 In development. Features listed above represent the planned scope and may change as implementation progresses.
 
