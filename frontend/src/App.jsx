@@ -22,29 +22,32 @@ function App() {
 
   const [connected, setConnected] = useState(false);
   const [playerCount, setPlayerCount] = useState(1);
+  const [connectedUsers, setConnectedUsers] = useState([]);
 
-  function updatePlayerCount() {
-    setPlayerCount(
-      Object.keys(otherPlayersRef.current).length + 1
+  function syncConnectedUsers() {
+    setConnectedUsers(
+      Object.keys(otherPlayersRef.current).map((userId, index) => ({
+        id: userId,
+        name: `Guest ${index + 1}`,
+      }))
     );
+    setPlayerCount(Object.keys(otherPlayersRef.current).length + 1);
   }
 
-  // Socket.IO connection and multiplayer events
+  // Socket.IO connection and multiplayer events.
   useEffect(() => {
     function handleConnect() {
       setConnected(true);
       console.log("Connected to ProxiSpeak:", socket.id);
 
-      // Ask the server for existing avatars.
       socket.emit("getAvatars");
-
-      // Publish this user's initial position.
       socket.emit("moveAvatar", playerRef.current);
     }
 
     function handleDisconnect() {
       setConnected(false);
       otherPlayersRef.current = {};
+      setConnectedUsers([]);
       setPlayerCount(1);
 
       console.log("Disconnected from ProxiSpeak");
@@ -73,7 +76,7 @@ function App() {
       });
 
       otherPlayersRef.current = updatedPlayers;
-      updatePlayerCount();
+      syncConnectedUsers();
 
       console.log("Current avatars synchronized");
     }
@@ -94,16 +97,14 @@ function App() {
         data.y
       );
 
-      updatePlayerCount();
+      syncConnectedUsers();
     }
 
     function handleAvatarLeft(data) {
       if (!data || typeof data.userId !== "string") return;
 
-      // Remove the disconnected user's avatar from the canvas data.
       delete otherPlayersRef.current[data.userId];
-
-      updatePlayerCount();
+      syncConnectedUsers();
 
       console.log("Avatar left:", data.userId);
     }
@@ -116,7 +117,6 @@ function App() {
 
     socket.connect();
 
-    // Handle a socket that was already connected.
     if (socket.connected) {
       handleConnect();
     }
@@ -127,7 +127,6 @@ function App() {
       socket.off("currentAvatars", handleCurrentAvatars);
       socket.off("avatarMoved", handleAvatarMoved);
       socket.off("avatarLeft", handleAvatarLeft);
-
       socket.disconnect();
     };
   }, []);
@@ -181,40 +180,39 @@ function App() {
     }
 
     function drawAvatar(x, y, name, color) {
-      // Shadow
+      // Shadow.
       ctx.fillStyle = "rgba(0, 0, 0, 0.15)";
       ctx.beginPath();
       ctx.ellipse(x, y + 17, 17, 6, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      // Body
+      // Body.
       ctx.fillStyle = color;
       ctx.fillRect(x - 12, y - 2, 24, 25);
 
-      // Head
+      // Head.
       ctx.fillStyle = "#f0bd91";
       ctx.beginPath();
       ctx.arc(x, y - 15, 13, 0, Math.PI * 2);
       ctx.fill();
 
-      // Hair
+      // Hair.
       ctx.fillStyle = "#44332d";
       ctx.beginPath();
       ctx.arc(x, y - 19, 12, Math.PI, Math.PI * 2);
       ctx.fill();
 
-      // Eyes
+      // Eyes.
       ctx.fillStyle = "#30251f";
       ctx.beginPath();
       ctx.arc(x - 4, y - 15, 1.3, 0, Math.PI * 2);
       ctx.arc(x + 4, y - 15, 1.3, 0, Math.PI * 2);
       ctx.fill();
 
-      // Name label
+      // Name label.
       ctx.font = "bold 13px Arial";
       ctx.textAlign = "center";
       ctx.textBaseline = "alphabetic";
-
       ctx.lineWidth = 3;
       ctx.strokeStyle = "#eee8dc";
       ctx.strokeText(name, x, y + 40);
@@ -224,11 +222,11 @@ function App() {
     }
 
     function drawOffice() {
-      // Floor
+      // Floor.
       ctx.fillStyle = "#eee8dc";
       ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-      // Floor grid
+      // Floor grid.
       ctx.strokeStyle = "#ddd4c5";
       ctx.lineWidth = 1;
 
@@ -246,44 +244,44 @@ function App() {
         ctx.stroke();
       }
 
-      // Walls
+      // Walls.
       ctx.fillStyle = "#64748b";
       ctx.fillRect(0, 0, WIDTH, 16);
       ctx.fillRect(0, 0, 16, HEIGHT);
       ctx.fillRect(WIDTH - 16, 0, 16, HEIGHT);
       ctx.fillRect(0, HEIGHT - 16, WIDTH, 16);
 
-      // Furniture
+      // Furniture.
       drawDesk(80, 110);
       drawDesk(280, 110);
       drawDesk(680, 110);
       drawDesk(80, 420);
       drawDesk(680, 420);
 
-      // Plants
+      // Plants.
       drawPlant(55, 65);
       drawPlant(835, 65);
       drawPlant(835, 515);
 
-      // Office title
+      // Office title.
       ctx.fillStyle = "#475569";
       ctx.font = "bold 16px Arial";
       ctx.textAlign = "left";
       ctx.fillText("PROXISPEAK OFFICE", 35, 45);
 
-      // Draw all remote avatars.
+      // Remote avatars.
       Object.entries(otherPlayersRef.current).forEach(
-  ([, position], index) => {
-    drawAvatar(
-      position.x,
-      position.y,
-      `Guest ${index + 1}`,
-      "#df7b48"
-    );
-  }
-);
+        ([, position], index) => {
+          drawAvatar(
+            position.x,
+            position.y,
+            `Guest ${index + 1}`,
+            "#df7b48"
+          );
+        }
+      );
 
-      // Draw local avatar last.
+      // Local avatar.
       drawAvatar(player.x, player.y, "You", "#4169e1");
     }
 
@@ -423,6 +421,47 @@ function App() {
         <p className="controls">
           <strong>Move:</strong> Arrow keys or W, A, S, D
         </p>
+      </section>
+
+      <section className="connected-users">
+        <div className="connected-users-heading">
+          <h2>Connected Users</h2>
+          <span>{playerCount} online</span>
+        </div>
+
+        <div className="connected-user-list">
+          <div className="connected-user">
+            <span className="user-avatar local-avatar">Y</span>
+            <div className="user-details">
+              <strong>You</strong>
+              <span className="online-status">
+                <span className="online-dot" />
+                {connected ? "Online" : "Connecting..."}
+              </span>
+            </div>
+          </div>
+
+          {connectedUsers.map((user) => (
+            <div className="connected-user" key={user.id}>
+              <span className="user-avatar guest-avatar">
+                {user.name.charAt(0)}
+              </span>
+              <div className="user-details">
+                <strong>{user.name}</strong>
+                <span className="online-status">
+                  <span className="online-dot" />
+                  Online
+                </span>
+              </div>
+            </div>
+          ))}
+
+          {connectedUsers.length === 0 && (
+            <p className="no-other-users">
+              No other users connected yet. Invite someone to join!
+            </p>
+          )}
+        </div>
       </section>
 
       <footer>ProxiSpeak · Real-time workspace prototype</footer>
