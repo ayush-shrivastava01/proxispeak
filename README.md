@@ -59,10 +59,9 @@ This project is being developed collaboratively by a team of five members.
 - Configured Socket.IO for real-time communication.
 - Implemented real-time avatar movement broadcasting.
 - Implemented location sharing between connected users.
-- Added nearby user detection using geographical distance.
 - Implemented basic WebRTC signaling message relay for offers, answers, and ICE candidates.
 - Added socket disconnection handling and nearby user list updates.
-- Integrated the frontend with the existing backend code.
+- Integrated the latest frontend changes with the backend code.
 - Committed and pushed the frontend integration changes to the `soumi-bera-realtime` branch.
 
 
@@ -70,21 +69,22 @@ This project is being developed collaboratively by a team of five members.
 ### Testing Status
 
 - Verified that the backend server starts successfully.
-- Tested real-time location sharing and nearby user detection using two clients.
-- Tested avatar movement broadcasting between connected clients.
-- Tested basic WebRTC offer and answer message relaying.
-- Tested sending an ICE candidate message.
+- Tested avatar movement synchronization between two browser windows.
+- Verified that the connected users panel works with the integrated frontend.
+- Successfully built the frontend using the production build command.
+- Tested basic WebRTC signaling message relaying, including offer, answer, and ICE candidate messages.
 
-**Note:** Basic WebRTC signaling message relaying has been tested, but a complete WebRTC audio connection has not yet been verified. The frontend production build completed successfully, but the frontend and backend still need to be tested together after the latest integration.
+
+**Note:** Basic WebRTC signaling message relaying has been implemented and tested. However, a complete WebRTC audio connection between two browsers has not yet been verified. The current frontend integration still requires microphone controls and WebRTC peer connection functionality before end-to-end voice calling can be tested.
 
 ### Next Steps
 
-- Run and test the frontend and backend together.
-- Test real-time avatar movement after the latest frontend integration.
-- Test WebRTC audio communication between two browsers.
-- Verify ICE candidate exchange and connection establishment.
-- Implement distance-based audio attenuation.
-- Improve error handling and document real-time socket events.
+- Coordinate with the frontend and WebRTC/audio team members to complete voice calling integration.
+- Test microphone access and WebRTC peer connection establishment between two browsers.
+- Verify offer-answer exchange, ICE candidate exchange, and actual audio communication.
+- Verify proximity detection and nearby-user updates with the latest integrated frontend.
+- Improve socket event error handling and document the event flow.
+- Support final integration testing with the other team members.
 
 ## Project Status
 In development. Features listed above represent the planned scope and may change as implementation progresses.
