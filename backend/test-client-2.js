@@ -48,3 +48,8 @@ socket.on("webrtc-offer", (data) => {
 socket.on("webrtc-ice-candidate", (data) => {
     console.log("ICE candidate received:", data);
 });
+// Keep the test client running until Ctrl+C is pressed.
+process.on("SIGINT", () => {
+    socket.disconnect();
+    process.exit(0);
+});
