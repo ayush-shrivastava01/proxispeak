@@ -85,7 +85,7 @@ io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
   console.log("Total connected users:", io.engine.clientsCount);
 
-    // Send the IDs of other currently connected users.
+  // Send the IDs of other currently connected users.
   socket.on("getConnectedUsers", () => {
     const connectedUsers = Array.from(io.sockets.sockets.keys())
       .filter((userId) => userId !== socket.id);
