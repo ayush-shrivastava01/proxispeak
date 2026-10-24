@@ -1,3 +1,5 @@
+import { createProximityAudio } from "./spatialAudio.js";
+export const remoteAudioPlayers = new Map();
 export function createPeerConnection(localStream, socket, targetUserId) {
   const peerConnection = new RTCPeerConnection({
     iceServers: [
@@ -25,22 +27,31 @@ export function createPeerConnection(localStream, socket, targetUserId) {
   };
 
   // Receive remote audio
-  peerConnection.ontrack = (event) => {
-    let remoteAudio = document.getElementById("remoteAudio");
+  peerConnection.ontrack = async (event) => {
+  try {
+    const remoteStream = event.streams[0];
 
-    if (!remoteAudio) {
-      remoteAudio = document.createElement("audio");
-      remoteAudio.id = "remoteAudio";
-      remoteAudio.autoplay = true;
-      document.body.appendChild(remoteAudio);
+    if (!remoteStream) return;
+
+    const audio = createProximityAudio(remoteStream);
+
+    if (audio.audioContext.state === "suspended") {
+      await audio.audioContext.resume();
     }
+    
+    remoteAudioPlayers.set(targetUserId, audio);
 
-    remoteAudio.srcObject = event.streams[0];
+    audio.audioContext.addEventListener("statechange", () => {
+  if (audio.audioContext.state === "closed") {
+    remoteAudioPlayers.delete(targetUserId);
+  }
+});
 
-    remoteAudio.play().catch((error) => {
-      console.log("Audio playback needs user interaction:", error);
-    });
-  };
+    console.log("Remote spatial audio connected successfully");
+  } catch (error) {
+    console.error("Spatial audio setup failed:", error);
+  }
+};
 
   peerConnection.onconnectionstatechange = () => {
     console.log("WebRTC connection state:", peerConnection.connectionState);
