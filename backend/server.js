@@ -1,7 +1,18 @@
+try {
+  require("dotenv").config(); // optional: loads backend/.env if dotenv is installed
+} catch {
+  // dotenv not installed: use real environment variables only
+}
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
+const {
+  PROXIMITY_RADIUS_PX,
+  pixelDistance,
+  findNearbyInMemory,
+  findNearbyInMongo,
+} = require("./proximity");
 
 const app = express();
 const server = http.createServer(app);
@@ -17,21 +28,143 @@ const io = new Server(server, {
   transports: ["websocket", "polling"],
 });
 
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
+const MONGODB_URI = process.env.MONGODB_URI;
+
+// World size (canvas pixels) and how often proximity is recalculated per user.
+const WORLD_WIDTH = 900;
+const WORLD_HEIGHT = 600;
+const PROXIMITY_THROTTLE_MS = 100;
+
+// Legacy lat/long nearby feature (kept so older clients keep working).
 const NEARBY_DISTANCE_KM = 1;
 
-// Store connected users' locations and avatar positions in memory.
-const users = new Map();
+// Latest avatar positions in memory (authoritative for broadcasting and for
+// deciding who may exchange WebRTC signaling messages).
 const avatars = new Map();
+// Latest shared latitude/longitude (legacy feature).
+const users = new Map();
+// userId -> Set of userIds currently inside that user's earshot radius.
+const nearbySets = new Map();
+// userId -> pending throttled proximity timer.
+const proximityTimers = new Map();
 
-app.get("/", (_req, res) => {
-  res.send("ProxiSpeak Backend is Running!");
-});
+// ---------------------------------------------------------------------------
+// MongoDB (optional). Without MONGODB_URI the server falls back to in-memory
+// proximity so that development and tests still work.
+// ---------------------------------------------------------------------------
+let Avatar = null;
+let dbReady = false;
 
-// Calculate distance between two geographical coordinates.
+async function connectDatabase() {
+  if (!MONGODB_URI) {
+    console.log("MONGODB_URI not set. Using in-memory proximity (no MongoDB).");
+    return;
+  }
+
+  try {
+    const mongoose = require("mongoose");
+    await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 5000 });
+
+    Avatar = require("./models/Avatar");
+    await Avatar.init(); // make sure the 2d geospatial index exists
+    await Avatar.deleteMany({}); // clear stale avatars from a previous run
+
+    mongoose.connection.on("disconnected", () => {
+      dbReady = false;
+      console.warn("MongoDB disconnected. Falling back to in-memory proximity.");
+    });
+    mongoose.connection.on("connected", () => {
+      dbReady = true;
+    });
+
+    dbReady = true;
+    console.log("MongoDB connected. Using $near geospatial queries.");
+  } catch (error) {
+    dbReady = false;
+    console.error(
+      "MongoDB connection failed. Using in-memory proximity:",
+      error.message
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Proximity (pixel based, 100 px radius by default)
+// ---------------------------------------------------------------------------
+async function findNearby(userId, position) {
+  if (dbReady && Avatar) {
+    try {
+      await Avatar.updateOne(
+        { userId },
+        { $set: { location: [position.x, position.y], updatedAt: new Date() } },
+        { upsert: true }
+      );
+      return await findNearbyInMongo(Avatar, userId, position);
+    } catch (error) {
+      console.error("MongoDB proximity query failed, using memory:", error.message);
+    }
+  }
+
+  return findNearbyInMemory(avatars, userId, position);
+}
+
+// Recalculate who is near `userId`, tell that user, and tell every user whose
+// "nearby" membership changed because of this movement.
+async function refreshProximity(userId) {
+  const position = avatars.get(userId);
+  if (!position) return;
+
+  const nearby = await findNearby(userId, position);
+  if (!avatars.has(userId)) return; // user left while the query was running
+
+  const newSet = new Set(nearby.map((item) => item.userId));
+  const oldSet = nearbySets.get(userId) || new Set();
+  nearbySets.set(userId, newSet);
+
+  io.to(userId).emit("nearbyAvatars", nearby);
+
+  const changed = new Set();
+  for (const id of newSet) if (!oldSet.has(id)) changed.add(id);
+  for (const id of oldSet) if (!newSet.has(id)) changed.add(id);
+
+  for (const otherId of changed) {
+    const otherPosition = avatars.get(otherId);
+    if (!otherPosition) continue;
+
+    const otherNearby = findNearbyInMemory(avatars, otherId, otherPosition);
+    nearbySets.set(otherId, new Set(otherNearby.map((item) => item.userId)));
+    io.to(otherId).emit("nearbyAvatars", otherNearby);
+  }
+}
+
+function scheduleProximity(userId) {
+  if (proximityTimers.has(userId)) return;
+
+  const timer = setTimeout(async () => {
+    proximityTimers.delete(userId);
+    try {
+      await refreshProximity(userId);
+    } catch (error) {
+      console.error("Proximity update failed:", error.message);
+    }
+  }, PROXIMITY_THROTTLE_MS);
+
+  proximityTimers.set(userId, timer);
+}
+
+// WebRTC signaling is only allowed between users within earshot.
+function isWithinEarshot(userIdA, userIdB) {
+  const a = avatars.get(userIdA);
+  const b = avatars.get(userIdB);
+  return Boolean(a && b && pixelDistance(a, b) <= PROXIMITY_RADIUS_PX);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy latitude/longitude helpers
+// ---------------------------------------------------------------------------
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const earthRadius = 6371;
-
   const toRadians = (degrees) => (degrees * Math.PI) / 180;
 
   const dLat = toRadians(lat2 - lat1);
@@ -46,7 +179,6 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   return earthRadius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Find users within the configured distance.
 function getNearbyUsers(userId, location) {
   const nearby = [];
 
@@ -71,14 +203,64 @@ function getNearbyUsers(userId, location) {
   return nearby;
 }
 
-// Refresh nearby-user lists for all users who shared a location.
 function refreshNearbyUsers() {
   for (const [userId, location] of users.entries()) {
-    io.to(userId).emit(
-      "nearbyUsers",
-      getNearbyUsers(userId, location)
-    );
+    io.to(userId).emit("nearbyUsers", getNearbyUsers(userId, location));
   }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
+app.get("/", (_req, res) => {
+  res.send("ProxiSpeak Backend is Running!");
+});
+
+app.get("/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    mongodb: dbReady,
+    proximityRadiusPx: PROXIMITY_RADIUS_PX,
+    avatars: avatars.size,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Socket.io
+// ---------------------------------------------------------------------------
+function currentAvatarList() {
+  return Array.from(avatars.entries()).map(([userId, position]) => ({
+    userId,
+    x: position.x,
+    y: position.y,
+  }));
+}
+
+// Forward a WebRTC signaling message only when the target exists and is
+// within earshot of the sender.
+function forwardSignal(socket, eventName, payloadKey, payload = {}) {
+  const { targetUserId } = payload;
+  const data = payload[payloadKey];
+
+  if (
+    typeof targetUserId !== "string" ||
+    !data ||
+    !io.sockets.sockets.has(targetUserId)
+  ) {
+    return;
+  }
+
+  if (!isWithinEarshot(socket.id, targetUserId)) {
+    socket.emit("webrtc-out-of-range", { targetUserId });
+    return;
+  }
+
+  io.to(targetUserId).emit(eventName, {
+    senderUserId: socket.id,
+    [payloadKey]: data,
+  });
+
+  console.log(`${eventName}:`, socket.id, "->", targetUserId);
 }
 
 io.on("connection", (socket) => {
@@ -87,103 +269,50 @@ io.on("connection", (socket) => {
 
   // Send the IDs of other currently connected users.
   socket.on("getConnectedUsers", () => {
-    const connectedUsers = Array.from(io.sockets.sockets.keys())
-      .filter((userId) => userId !== socket.id);
+    const connectedUsers = Array.from(io.sockets.sockets.keys()).filter(
+      (userId) => userId !== socket.id
+    );
 
     socket.emit("connectedUsers", connectedUsers);
   });
 
- // Send existing avatars to the newly connected user.
-socket.emit(
-  "currentAvatars",
-  Array.from(avatars.entries()).map(([userId, position]) => ({
-    userId,
-    x: position.x,
-    y: position.y,
-  }))
-);
+  // Send existing avatars to the newly connected user.
+  socket.emit("currentAvatars", currentAvatarList());
 
-// Register and announce the new user's avatar.
-const initialPosition = { x: 450, y: 300 };
+  // Register and announce the new user's avatar.
+  const initialPosition = { x: 450, y: 300 };
+  avatars.set(socket.id, initialPosition);
 
-avatars.set(socket.id, initialPosition);
+  socket.broadcast.emit("avatarMoved", {
+    userId: socket.id,
+    x: initialPosition.x,
+    y: initialPosition.y,
+  });
+  scheduleProximity(socket.id);
 
-socket.broadcast.emit("avatarMoved", {
-  userId: socket.id,
-  x: initialPosition.x,
-  y: initialPosition.y,
-});
-// Send the current avatar list when requested by the frontend.
-socket.on("getAvatars", () => {
-  socket.emit(
-    "currentAvatars",
-    Array.from(avatars.entries()).map(([userId, position]) => ({
-      userId,
-      x: position.x,
-      y: position.y,
-    }))
+  // Send the current avatar list when requested by the frontend.
+  socket.on("getAvatars", () => {
+    socket.emit("currentAvatars", currentAvatarList());
+  });
+
+  // Current list of users inside earshot (pixel radius).
+  socket.on("getNearbyAvatars", async () => {
+    const position = avatars.get(socket.id);
+    if (!position) return;
+
+    socket.emit("nearbyAvatars", await findNearby(socket.id, position));
+  });
+
+  // WebRTC signaling (only within earshot).
+  socket.on("webrtc-offer", (payload) =>
+    forwardSignal(socket, "webrtc-offer", "offer", payload)
   );
-});
-
-  // WebRTC: Forward an offer to the intended connected user.
-  socket.on("webrtc-offer", (payload = {}) => {
-    const { targetUserId, offer } = payload;
-
-    if (
-      typeof targetUserId !== "string" ||
-      !offer ||
-      !io.sockets.sockets.has(targetUserId)
-    ) {
-      return;
-    }
-
-    io.to(targetUserId).emit("webrtc-offer", {
-      senderUserId: socket.id,
-      offer,
-    });
-
-    console.log("WebRTC offer sent:", socket.id, "->", targetUserId);
-  });
-
-  // WebRTC: Forward an answer to the intended connected user.
-  socket.on("webrtc-answer", (payload = {}) => {
-    const { targetUserId, answer } = payload;
-
-    if (
-      typeof targetUserId !== "string" ||
-      !answer ||
-      !io.sockets.sockets.has(targetUserId)
-    ) {
-      return;
-    }
-
-    io.to(targetUserId).emit("webrtc-answer", {
-      senderUserId: socket.id,
-      answer,
-    });
-
-    console.log("WebRTC answer sent:", socket.id, "->", targetUserId);
-  });
-
-  // WebRTC: Forward ICE candidates.
-  socket.on("webrtc-ice-candidate", (payload = {}) => {
-    const { targetUserId, candidate } = payload;
-
-    if (
-      typeof targetUserId !== "string" ||
-      !candidate ||
-      !io.sockets.sockets.has(targetUserId)
-    ) {
-      return;
-    }
-
-    io.to(targetUserId).emit("webrtc-ice-candidate", {
-      senderUserId: socket.id,
-      candidate,
-    });
-
-    console.log("ICE candidate sent:", socket.id, "->", targetUserId);
-  });
+  socket.on("webrtc-answer", (payload) =>
+    forwardSignal(socket, "webrtc-answer", "answer", payload)
+  );
+  socket.on("webrtc-ice-candidate", (payload) =>
+    forwardSignal(socket, "webrtc-ice-candidate", "candidate", payload)
+  );
 
   // Handle avatar movement and store the latest position.
   socket.on("moveAvatar", (position) => {
@@ -198,8 +327,8 @@ socket.on("getAvatars", () => {
     }
 
     const safePosition = {
-      x: Math.max(0, Math.min(900, position.x)),
-      y: Math.max(0, Math.min(600, position.y)),
+      x: Math.max(0, Math.min(WORLD_WIDTH, position.x)),
+      y: Math.max(0, Math.min(WORLD_HEIGHT, position.y)),
     };
 
     avatars.set(socket.id, safePosition);
@@ -208,9 +337,11 @@ socket.on("getAvatars", () => {
       userId: socket.id,
       ...safePosition,
     });
+
+    scheduleProximity(socket.id);
   });
 
-  // Handle location sharing and nearby-user detection.
+  // Legacy: latitude/longitude sharing and nearby-user detection.
   socket.on("shareLocation", (location) => {
     if (
       !location ||
@@ -232,31 +363,46 @@ socket.on("getAvatars", () => {
       longitude: location.longitude,
     });
 
-    console.log("Location received from:", socket.id);
-
-    socket.emit(
-      "nearbyUsers",
-      getNearbyUsers(socket.id, location)
-    );
-
+    socket.emit("nearbyUsers", getNearbyUsers(socket.id, location));
     refreshNearbyUsers();
   });
 
   // Remove the disconnected user's data and notify other clients.
   socket.on("disconnect", () => {
+    clearTimeout(proximityTimers.get(socket.id));
+    proximityTimers.delete(socket.id);
+
     users.delete(socket.id);
     avatars.delete(socket.id);
 
-    socket.broadcast.emit("avatarLeft", {
-  userId: socket.id,
-});
+    const previouslyNearby = nearbySets.get(socket.id) || new Set();
+    nearbySets.delete(socket.id);
+
+    if (dbReady && Avatar) {
+      Avatar.deleteOne({ userId: socket.id }).catch((error) =>
+        console.error("Failed to delete avatar:", error.message)
+      );
+    }
+
+    socket.broadcast.emit("avatarLeft", { userId: socket.id });
+
+    // Users who could hear the leaving user get an updated list.
+    for (const otherId of previouslyNearby) {
+      const otherPosition = avatars.get(otherId);
+      if (!otherPosition) continue;
+
+      const otherNearby = findNearbyInMemory(avatars, otherId, otherPosition);
+      nearbySets.set(otherId, new Set(otherNearby.map((item) => item.userId)));
+      io.to(otherId).emit("nearbyAvatars", otherNearby);
+    }
 
     refreshNearbyUsers();
-
     console.log("User disconnected:", socket.id);
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`ProxiSpeak server running on port ${PORT}`);
+connectDatabase().finally(() => {
+  server.listen(PORT, () => {
+    console.log(`ProxiSpeak server running on port ${PORT}`);
+  });
 });
