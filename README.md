@@ -63,7 +63,11 @@ This project is being developed collaboratively by a team of five members.
 - Added socket disconnection handling and nearby user list updates.
 - Integrated the latest frontend changes with the backend code.
 - Committed and pushed the frontend integration changes to the `soumi-bera-realtime` branch.
-
+- Added MongoDB (Mongoose) with an `Avatar` model that stores avatar `[x, y]` pixel positions with a geospatial `2d` index.
+- Implemented 100 px proximity detection using MongoDB `$near` queries (in-memory fallback if MongoDB is not connected).
+- Added the `nearbyAvatars` socket event, which tells each user who is currently within earshot.
+- Limited WebRTC signaling (offer, answer, ICE candidate) to users within 100 px of each other.
+- Added automated tests (`npm test`) and a proximity benchmark (`npm run benchmark`).
 
 
 ### Testing Status
@@ -73,16 +77,51 @@ This project is being developed collaboratively by a team of five members.
 - Verified that the connected users panel works with the integrated frontend.
 - Successfully built the frontend using the production build command.
 - Tested basic WebRTC signaling message relaying, including offer, answer, and ICE candidate messages.
+- Automated tests pass: 100 px distance calculation, and WebRTC signaling is blocked outside 100 px and delivered inside 100 px.
+- Verified with two browser tabs that avatar movement still synchronizes after the MongoDB and proximity changes.
 
 
 **Note:** Basic WebRTC signaling message relaying has been implemented and tested. However, a complete WebRTC audio connection between two browsers has not yet been verified. The current frontend integration still requires microphone controls and WebRTC peer connection functionality before end-to-end voice calling can be tested.
+
+### Proximity Performance (Mid Review audit)
+
+Measured with `npm run benchmark` (50 users, 300 queries, 100 px radius, MongoDB Atlas):
+
+| Measurement | Average | p95 | Max |
+|---|---|---|---|
+| MongoDB server-side `$near` query time | 1.71 ms | 2.00 ms | 3 ms |
+| Round trip including network (remote Atlas) | 58.28 ms | 92.85 ms | 983 ms |
+| In-memory clustering | 0.03 ms | 0.05 ms | 0.56 ms |
+
+The geospatial query itself runs in under 3 ms on the database. The round-trip time is higher because the Atlas cluster is remote; it is mostly network latency and would be lower with a local or same-region database.
+
+### Socket Event Reference
+
+| Event | Direction | Purpose |
+|---|---|---|
+| `moveAvatar` | client → server | Send the avatar's new `{x, y}` position |
+| `avatarMoved` | server → clients | Broadcast another user's new position |
+| `currentAvatars` / `getAvatars` | server ↔ client | List of all avatars and their positions |
+| `nearbyAvatars` / `getNearbyAvatars` | server ↔ client | Users within 100 px, with distance |
+| `webrtc-offer`, `webrtc-answer`, `webrtc-ice-candidate` | client → server → target | WebRTC signaling, only within 100 px |
+| `webrtc-out-of-range` | server → client | Signaling was blocked because the target is too far |
+| `avatarLeft` | server → clients | A user disconnected |
+| `getConnectedUsers` / `connectedUsers` | client ↔ server | IDs of all connected users |
+
+### How to Run the Backend
+
+1. In `backend`, run `npm install`.
+2. Copy `.env.example` to `.env` and set `MONGODB_URI` (local MongoDB or Atlas).
+3. `npm start` to run the server, `npm test` for the tests, `npm run benchmark` for the proximity benchmark.
 
 ### Next Steps
 
 - Coordinate with the frontend and WebRTC/audio team members to complete voice calling integration.
 - Test microphone access and WebRTC peer connection establishment between two browsers.
 - Verify offer-answer exchange, ICE candidate exchange, and actual audio communication.
-- Verify proximity detection and nearby-user updates with the latest integrated frontend.
+- Connect the frontend to the `nearbyAvatars` event so peer connections open and close based on proximity.
+- Add Redis Pub/Sub so the Socket.io server can scale across multiple Node instances.
+- Save and load office layouts and obstacles in MongoDB (room persistence).
 - Improve socket event error handling and document the event flow.
 - Support final integration testing with the other team members.
 
