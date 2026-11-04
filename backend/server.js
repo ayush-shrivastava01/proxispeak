@@ -13,6 +13,12 @@ const {
   findNearbyInMemory,
   findNearbyInMongo,
 } = require("./proximity");
+const {
+  DEFAULT_ROOM_ID,
+  ROOM_ID_PATTERN,
+  validateRoomPayload,
+  createRoomStore,
+} = require("./rooms");
 
 const app = express();
 const server = http.createServer(app);
@@ -54,7 +60,11 @@ const proximityTimers = new Map();
 // proximity so that development and tests still work.
 // ---------------------------------------------------------------------------
 let Avatar = null;
+let Room = null;
 let dbReady = false;
+
+// Office layouts and obstacles (MongoDB when connected, memory otherwise).
+const roomStore = createRoomStore(() => (dbReady ? Room : null));
 
 async function connectDatabase() {
   if (!MONGODB_URI) {
@@ -68,6 +78,8 @@ async function connectDatabase() {
 
     Avatar = require("./models/Avatar");
     await Avatar.init(); // make sure the 2d geospatial index exists
+    Room = require("./models/Room");
+    await Room.init();
     await Avatar.deleteMany({}); // clear stale avatars from a previous run
 
     mongoose.connection.on("disconnected", () => {
@@ -225,6 +237,30 @@ app.get("/health", (_req, res) => {
   });
 });
 
+// Room persistence (office layout and sound-blocking obstacles).
+app.get("/api/rooms/:roomId", async (req, res) => {
+  if (!ROOM_ID_PATTERN.test(req.params.roomId)) {
+    return res.status(400).json({ error: "Invalid room id." });
+  }
+
+  res.json(await roomStore.load(req.params.roomId));
+});
+
+app.put("/api/rooms/:roomId", async (req, res) => {
+  if (!ROOM_ID_PATTERN.test(req.params.roomId)) {
+    return res.status(400).json({ error: "Invalid room id." });
+  }
+
+  const result = validateRoomPayload(req.body);
+  if (result.error) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  const room = await roomStore.save(req.params.roomId, result.value);
+  io.emit("roomLayout", room);
+  res.json(room);
+});
+
 // ---------------------------------------------------------------------------
 // Socket.io
 // ---------------------------------------------------------------------------
@@ -289,6 +325,42 @@ io.on("connection", (socket) => {
     y: initialPosition.y,
   });
   scheduleProximity(socket.id);
+
+  // Send the saved office layout to the new user.
+  roomStore
+    .load(DEFAULT_ROOM_ID)
+    .then((room) => socket.emit("roomLayout", room))
+    .catch((error) => console.error("Failed to load room:", error.message));
+
+  // Load a saved room layout.
+  socket.on("getRoomLayout", async (payload = {}) => {
+    const roomId = payload.roomId || DEFAULT_ROOM_ID;
+
+    if (!ROOM_ID_PATTERN.test(roomId)) {
+      socket.emit("roomError", { message: "Invalid room id." });
+      return;
+    }
+
+    socket.emit("roomLayout", await roomStore.load(roomId));
+  });
+
+  // Save a room layout and tell every connected user.
+  socket.on("saveRoomLayout", async (payload = {}) => {
+    const roomId = payload.roomId || DEFAULT_ROOM_ID;
+
+    if (!ROOM_ID_PATTERN.test(roomId)) {
+      socket.emit("roomError", { message: "Invalid room id." });
+      return;
+    }
+
+    const result = validateRoomPayload(payload);
+    if (result.error) {
+      socket.emit("roomError", { message: result.error });
+      return;
+    }
+
+    io.emit("roomLayout", await roomStore.save(roomId, result.value));
+  });
 
   // Send the current avatar list when requested by the frontend.
   socket.on("getAvatars", () => {
