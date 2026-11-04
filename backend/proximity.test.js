@@ -5,6 +5,8 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const {
   findNearbyInMemory,
+  findClustersInMemory,
+  findUsersWithinCircleInMemory,
   pixelDistance,
   PROXIMITY_RADIUS_PX,
 } = require("./proximity");
@@ -98,4 +100,33 @@ test("signaling is blocked outside 100 px and allowed inside", async () => {
     b?.close();
     child.kill();
   }
+});
+
+
+test("findClustersInMemory groups users, including chains of neighbours", () => {
+  const positions = new Map([
+    ["a", { x: 100, y: 100 }],
+    ["b", { x: 180, y: 100 }], // 80 px from a
+    ["c", { x: 260, y: 100 }], // 80 px from b, 160 px from a (chain)
+    ["d", { x: 700, y: 500 }],
+    ["e", { x: 750, y: 500 }], // 50 px from d
+    ["f", { x: 400, y: 300 }], // alone
+  ]);
+
+  const clusters = findClustersInMemory(positions);
+
+  assert.equal(clusters.length, 2);
+  assert.deepEqual([...clusters[0]].sort(), ["a", "b", "c"]);
+  assert.deepEqual([...clusters[1]].sort(), ["d", "e"]);
+});
+
+test("findUsersWithinCircleInMemory returns users inside a circle", () => {
+  const positions = new Map([
+    ["in", { x: 110, y: 100 }],
+    ["edge", { x: 200, y: 100 }],
+    ["out", { x: 201, y: 100 }],
+  ]);
+
+  const users = findUsersWithinCircleInMemory(positions, { x: 100, y: 100 }, 100);
+  assert.deepEqual(users.map((u) => u.userId).sort(), ["edge", "in"]);
 });

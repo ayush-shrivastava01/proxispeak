@@ -12,6 +12,9 @@ const {
   pixelDistance,
   findNearbyInMemory,
   findNearbyInMongo,
+  findClustersInMemory,
+  findUsersWithinCircleInMemory,
+  findUsersWithinCircleMongo,
 } = require("./proximity");
 const {
   DEFAULT_ROOM_ID,
@@ -237,6 +240,54 @@ app.get("/health", (_req, res) => {
   });
 });
 
+// Proximity clusters: groups of users who can hear each other.
+app.get("/api/clusters", (_req, res) => {
+  res.json({
+    radius: PROXIMITY_RADIUS_PX,
+    clusters: findClustersInMemory(avatars),
+  });
+});
+
+// Users inside a circle (MongoDB $geoWithin when connected).
+// Example: /api/area?x=450&y=300&radius=100
+app.get("/api/area", async (req, res) => {
+  const x = Number(req.query.x);
+  const y = Number(req.query.y);
+  const radius =
+    req.query.radius === undefined
+      ? PROXIMITY_RADIUS_PX
+      : Number(req.query.radius);
+
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(radius) ||
+    radius <= 0 ||
+    radius > 1000
+  ) {
+    return res
+      .status(400)
+      .json({ error: "x, y and radius (1 to 1000) must be numbers." });
+  }
+
+  const center = { x, y };
+  let users;
+
+  if (dbReady && Avatar) {
+    try {
+      users = await findUsersWithinCircleMongo(Avatar, center, radius);
+    } catch (error) {
+      console.error("MongoDB $geoWithin failed, using memory:", error.message);
+    }
+  }
+
+  if (!users) {
+    users = findUsersWithinCircleInMemory(avatars, center, radius);
+  }
+
+  res.json({ center, radius, users });
+});
+
 // Room persistence (office layout and sound-blocking obstacles).
 app.get("/api/rooms/:roomId", async (req, res) => {
   if (!ROOM_ID_PATTERN.test(req.params.roomId)) {
@@ -373,6 +424,14 @@ io.on("connection", (socket) => {
     if (!position) return;
 
     socket.emit("nearbyAvatars", await findNearby(socket.id, position));
+  });
+
+    // Proximity clusters (groups of users within earshot of each other).
+  socket.on("getClusters", () => {
+    socket.emit("proximityClusters", {
+      radius: PROXIMITY_RADIUS_PX,
+      clusters: findClustersInMemory(avatars),
+    });
   });
 
   // WebRTC signaling (only within earshot).

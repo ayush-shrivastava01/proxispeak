@@ -43,9 +43,78 @@ async function findNearbyInMongo(Avatar, userId, position, radius = PROXIMITY_RA
   }));
 }
 
+// Group users into proximity clusters: two users are in the same cluster when
+// they are within `radius` of each other, directly or through a chain of users.
+// Only clusters with at least two users are returned (largest first).
+function findClustersInMemory(positions, radius = PROXIMITY_RADIUS_PX) {
+  const ids = Array.from(positions.keys());
+  const parent = new Map(ids.map((id) => [id, id]));
+
+  function find(id) {
+    while (parent.get(id) !== id) {
+      parent.set(id, parent.get(parent.get(id)));
+      id = parent.get(id);
+    }
+    return id;
+  }
+
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      if (pixelDistance(positions.get(ids[i]), positions.get(ids[j])) <= radius) {
+        parent.set(find(ids[i]), find(ids[j]));
+      }
+    }
+  }
+
+  const groups = new Map();
+  for (const id of ids) {
+    const root = find(id);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(id);
+  }
+
+  return Array.from(groups.values())
+    .filter((group) => group.length >= 2)
+    .sort((a, b) => b.length - a.length);
+}
+
+// All users inside a circle (in memory).
+function findUsersWithinCircleInMemory(positions, center, radius = PROXIMITY_RADIUS_PX) {
+  const users = [];
+
+  for (const [userId, position] of positions.entries()) {
+    if (pixelDistance(center, position) <= radius) {
+      users.push({ userId, x: position.x, y: position.y });
+    }
+  }
+
+  return users;
+}
+
+// All users inside a circle using a MongoDB $geoWithin query on the 2d index.
+async function findUsersWithinCircleMongo(Avatar, center, radius = PROXIMITY_RADIUS_PX) {
+  const docs = await Avatar.find({
+    location: { $geoWithin: { $center: [[center.x, center.y], radius] } },
+  })
+    .select("userId location")
+    .lean();
+
+  return docs.map((doc) => ({
+    userId: doc.userId,
+    x: doc.location[0],
+    y: doc.location[1],
+  }));
+}
+
 module.exports = {
   PROXIMITY_RADIUS_PX,
   pixelDistance,
   findNearbyInMemory,
   findNearbyInMongo,
+  findClustersInMemory,
+  findUsersWithinCircleInMemory,
+  findUsersWithinCircleMongo,
 };
+
+
+
