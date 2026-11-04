@@ -22,6 +22,8 @@ function App() {
   const keysRef = useRef(new Set());
   const nearbyRef = useRef(new Set()); // userIds within 100 px (from the server)
   const obstaclesRef = useRef([]); // saved room obstacles (from the server)
+  const targetRef = useRef(null); // click-to-move target {x, y}
+  const displayRef = useRef({}); // smoothed positions of other users
 
   const [connected, setConnected] = useState(false);
   const [playerCount, setPlayerCount] = useState(1);
@@ -321,7 +323,9 @@ function App() {
 
       // Remote avatars (green ring = within earshot).
       Object.entries(otherPlayersRef.current).forEach(
-        ([userId, position], index) => {
+        ([userId, target], index) => {
+          const position = displayRef.current[userId] || target;
+
           if (nearbyRef.current.has(userId)) {
             ctx.strokeStyle = "#16a34a";
             ctx.lineWidth = 3;
@@ -370,6 +374,15 @@ function App() {
     function handleBlur() {
       keys.clear();
     }
+    
+    // Click on the office to walk to that point.
+    function handleCanvasClick(event) {
+      const rect = canvas.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width) * WIDTH;
+      const y = ((event.clientY - rect.top) / rect.height) * HEIGHT;
+
+      targetRef.current = clampPosition(x, y);
+    }
 
     function animate(timestamp) {
       let dx = 0;
@@ -382,10 +395,35 @@ function App() {
 
       // Normalize diagonal movement.
       if (dx !== 0 || dy !== 0) {
+        targetRef.current = null; // keyboard cancels click-to-move
         const magnitude = Math.hypot(dx, dy);
         player.x += (dx / magnitude) * SPEED;
         player.y += (dy / magnitude) * SPEED;
+      } else if (targetRef.current) {
+        const target = targetRef.current;
+        const distance = Math.hypot(target.x - player.x, target.y - player.y);
+
+        if (distance <= SPEED) {
+          player.x = target.x;
+          player.y = target.y;
+          targetRef.current = null;
+        } else {
+          player.x += ((target.x - player.x) / distance) * SPEED;
+          player.y += ((target.y - player.y) / distance) * SPEED;
+        }
       }
+
+      // Smooth the other users' movement (they arrive about 20 times a second).
+      const display = displayRef.current;
+      Object.entries(otherPlayersRef.current).forEach(([userId, target]) => {
+        const shown = display[userId] || { x: target.x, y: target.y };
+        shown.x += (target.x - shown.x) * 0.3;
+        shown.y += (target.y - shown.y) * 0.3;
+        display[userId] = shown;
+      });
+      Object.keys(display).forEach((userId) => {
+        if (!otherPlayersRef.current[userId]) delete display[userId];
+      });
 
       // Keep avatar inside the office.
       player.x = Math.max(40, Math.min(WIDTH - 40, player.x));
@@ -414,6 +452,7 @@ function App() {
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
     window.addEventListener("blur", handleBlur);
+    canvas.addEventListener("click", handleCanvasClick);
 
     animationId = requestAnimationFrame(animate);
 
@@ -422,6 +461,7 @@ function App() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
+      canvas.removeEventListener("click", handleCanvasClick);
       keys.clear();
     };
   }, []);
