@@ -68,6 +68,7 @@ This project is being developed collaboratively by a team of five members.
 - Added the `nearbyAvatars` socket event, which tells each user who is currently within earshot.
 - Limited WebRTC signaling (offer, answer, ICE candidate) to users within 100 px of each other.
 - Added automated tests (`npm test`) and a proximity benchmark (`npm run benchmark`).
+- Added room persistence: office layouts and sound-blocking obstacles are saved in MongoDB through a REST API (`GET/PUT /api/rooms/:roomId`) and socket events (`getRoomLayout`, `saveRoomLayout`, `roomLayout`), with automated tests.
 
 
 ### Testing Status
@@ -81,7 +82,7 @@ This project is being developed collaboratively by a team of five members.
 - Verified with two browser tabs that avatar movement still synchronizes after the MongoDB and proximity changes.
 
 
-**Note:** Basic WebRTC signaling message relaying has been implemented and tested. However, a complete WebRTC audio connection between two browsers has not yet been verified. The current frontend integration still requires microphone controls and WebRTC peer connection functionality before end-to-end voice calling can be tested.
+**Note:** Basic WebRTC signaling message relaying has been implemented and tested on the backend. A complete WebRTC audio connection between two browsers is being integrated by the WebRTC/audio team member and has not yet been verified end to end by the backend side.
 
 ### Proximity Performance (Mid Review audit)
 
@@ -107,6 +108,21 @@ The geospatial query itself runs in under 3 ms on the database. The round-trip t
 | `webrtc-out-of-range` | server → client | Signaling was blocked because the target is too far |
 | `avatarLeft` | server → clients | A user disconnected |
 | `getConnectedUsers` / `connectedUsers` | client ↔ server | IDs of all connected users |
+| `roomLayout` | server → client | Saved office layout and obstacles (sent on connect and whenever a layout is saved) |
+| `getRoomLayout` | client → server | Request a saved room, payload `{ roomId }` (default room is `main`) |
+| `saveRoomLayout` | client → server | Save a room, payload `{ roomId, name, obstacles: [{type, x, y, width, height, blocksSound}] }` |
+| `roomError` | server → client | The room data or room id was invalid, with a `message` |
+
+### Room Persistence (REST API)
+
+Office layouts and furniture obstacles (which block sound) are stored in MongoDB (`rooms` collection). If MongoDB is not connected, rooms are kept in memory.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/rooms/:roomId` | Load a room. Returns an empty room if it has not been saved yet. |
+| PUT | `/api/rooms/:roomId` | Save a room. Body: `{ "name": "My Office", "obstacles": [{ "type": "desk", "x": 100, "y": 100, "width": 80, "height": 40, "blocksSound": true }] }` |
+
+Rules: `roomId` may contain letters, numbers, `-` and `_` (up to 40 characters); an obstacle must lie inside the 900 x 600 office area; at most 200 obstacles per room. Invalid data returns HTTP 400 (or a `roomError` event over sockets).
 
 ### How to Run the Backend
 
@@ -121,9 +137,9 @@ The geospatial query itself runs in under 3 ms on the database. The round-trip t
 - Verify offer-answer exchange, ICE candidate exchange, and actual audio communication.
 - Connect the frontend to the `nearbyAvatars` event so peer connections open and close based on proximity.
 - Add Redis Pub/Sub so the Socket.io server can scale across multiple Node instances.
-- Save and load office layouts and obstacles in MongoDB (room persistence).
 - Improve socket event error handling and document the event flow.
 - Support final integration testing with the other team members.
+- Frontend: draw the saved obstacles on the canvas and lower audio volume behind sound-blocking obstacles.
 
 ## Project Status
 In development. Features listed above represent the planned scope and may change as implementation progresses.
