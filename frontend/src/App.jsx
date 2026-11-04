@@ -6,6 +6,7 @@ import "./App.css";
 const WIDTH = 900;
 const HEIGHT = 600;
 const SPEED = 3;
+const EARSHOT_RADIUS = 100; // must match PROXIMITY_RADIUS_PX on the server
 
 function clampPosition(x, y) {
   return {
@@ -19,6 +20,8 @@ function App() {
   const playerRef = useRef({ x: 450, y: 300 });
   const otherPlayersRef = useRef({});
   const keysRef = useRef(new Set());
+  const nearbyRef = useRef(new Set()); // userIds within 100 px (from the server)
+  const obstaclesRef = useRef([]); // saved room obstacles (from the server)
 
   const [connected, setConnected] = useState(false);
   const [playerCount, setPlayerCount] = useState(1);
@@ -47,6 +50,7 @@ function App() {
     function handleDisconnect() {
       setConnected(false);
       otherPlayersRef.current = {};
+      nearbyRef.current = new Set();
       setConnectedUsers([]);
       setPlayerCount(1);
 
@@ -109,11 +113,29 @@ function App() {
       console.log("Avatar left:", data.userId);
     }
 
+    function handleNearbyAvatars(list) {
+      if (!Array.isArray(list)) return;
+
+      nearbyRef.current = new Set(
+        list
+          .filter((item) => item && typeof item.userId === "string")
+          .map((item) => item.userId)
+      );
+    }
+
+    function handleRoomLayout(room) {
+      obstaclesRef.current = Array.isArray(room?.obstacles)
+        ? room.obstacles
+        : [];
+    }
+
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("currentAvatars", handleCurrentAvatars);
     socket.on("avatarMoved", handleAvatarMoved);
     socket.on("avatarLeft", handleAvatarLeft);
+    socket.on("nearbyAvatars", handleNearbyAvatars);
+    socket.on("roomLayout", handleRoomLayout);
 
     socket.connect();
 
@@ -127,6 +149,8 @@ function App() {
       socket.off("currentAvatars", handleCurrentAvatars);
       socket.off("avatarMoved", handleAvatarMoved);
       socket.off("avatarLeft", handleAvatarLeft);
+      socket.off("nearbyAvatars", handleNearbyAvatars);
+      socket.off("roomLayout", handleRoomLayout);
       socket.disconnect();
     };
   }, []);
@@ -269,9 +293,43 @@ function App() {
       ctx.textAlign = "left";
       ctx.fillText("PROXISPEAK OFFICE", 35, 45);
 
-      // Remote avatars.
+      // Saved obstacles from the server (sound-blocking ones are darker).
+      obstaclesRef.current.forEach((item) => {
+        ctx.fillStyle = item.blocksSound ? "#7c5a3a" : "#b89570";
+        ctx.fillRect(item.x, item.y, item.width, item.height);
+        ctx.strokeStyle = "#3f2d1d";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(item.x, item.y, item.width, item.height);
+      });
+
+      // Earshot radius (100 px) around the local avatar.
+      ctx.fillStyle = "rgba(65, 105, 225, 0.08)";
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, EARSHOT_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(65, 105, 225, 0.55)";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 6]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Nearby counter.
+      ctx.fillStyle = "#475569";
+      ctx.font = "bold 14px Arial";
+      ctx.textAlign = "right";
+      ctx.fillText(`Nearby: ${nearbyRef.current.size}`, WIDTH - 35, 45);
+
+      // Remote avatars (green ring = within earshot).
       Object.entries(otherPlayersRef.current).forEach(
-        ([, position], index) => {
+        ([userId, position], index) => {
+          if (nearbyRef.current.has(userId)) {
+            ctx.strokeStyle = "#16a34a";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(position.x, position.y - 3, 30, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+
           drawAvatar(
             position.x,
             position.y,
