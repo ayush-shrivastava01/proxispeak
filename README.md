@@ -69,7 +69,8 @@ This project is being developed collaboratively by a team of five members.
 - Limited WebRTC signaling (offer, answer, ICE candidate) to users within 100 px of each other.
 - Added automated tests (`npm test`) and a proximity benchmark (`npm run benchmark`).
 - Added room persistence: office layouts and sound-blocking obstacles are saved in MongoDB through a REST API (`GET/PUT /api/rooms/:roomId`) and socket events (`getRoomLayout`, `saveRoomLayout`, `roomLayout`), with automated tests.
-
+- Added proximity clusters and a `$geoWithin` area query (`GET /api/clusters`, `GET /api/area`, `getClusters` event), with automated tests.
+- Frontend canvas now shows the 100 px earshot radius, highlights nearby users with a green ring, draws the saved obstacles from the server, and supports click-to-move with smoother remote avatar movement.
 
 ### Testing Status
 
@@ -78,8 +79,9 @@ This project is being developed collaboratively by a team of five members.
 - Verified that the connected users panel works with the integrated frontend.
 - Successfully built the frontend using the production build command.
 - Tested basic WebRTC signaling message relaying, including offer, answer, and ICE candidate messages.
-- Automated tests pass: 100 px distance calculation, and WebRTC signaling is blocked outside 100 px and delivered inside 100 px.
+- All 8 automated tests pass (`npm test`): 100 px distance and nearby-user calculation, proximity clusters, users inside a circle, room validation and persistence, WebRTC signaling blocked outside 100 px and delivered inside 100 px, and offer/answer/ICE forwarding.
 - Verified with two browser tabs that avatar movement still synchronizes after the MongoDB and proximity changes.
+- Verified in two browser tabs that the earshot radius, green ring, saved obstacles and click-to-move work.
 
 
 **Note:** Basic WebRTC signaling message relaying has been implemented and tested on the backend. A complete WebRTC audio connection between two browsers is being integrated by the WebRTC/audio team member and has not yet been verified end to end by the backend side.
@@ -112,6 +114,15 @@ The geospatial query itself runs in under 3 ms on the database. The round-trip t
 | `getRoomLayout` | client → server | Request a saved room, payload `{ roomId }` (default room is `main`) |
 | `saveRoomLayout` | client → server | Save a room, payload `{ roomId, name, obstacles: [{type, x, y, width, height, blocksSound}] }` |
 | `roomError` | server → client | The room data or room id was invalid, with a `message` |
+| `getClusters` | client → server | Ask for the current proximity clusters |
+| `proximityClusters` | server → client | Groups of users within 100 px of each other, `{ radius, clusters: [[userId, ...]] }` |
+
+### Proximity Queries (REST API)
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/clusters` | Groups of users who are within 100 px of each other (directly or through a chain of users). Only groups of two or more are returned. |
+| GET | `/api/area?x=450&y=300&radius=100` | Users inside a circle, using a MongoDB `$geoWithin` query (falls back to memory if MongoDB is not connected). `radius` is optional (default 100, maximum 1000). |
 
 ### Room Persistence (REST API)
 
@@ -130,16 +141,21 @@ Rules: `roomId` may contain letters, numbers, `-` and `_` (up to 40 characters);
 2. Copy `.env.example` to `.env` and set `MONGODB_URI` (local MongoDB or Atlas).
 3. `npm start` to run the server, `npm test` for the tests, `npm run benchmark` for the proximity benchmark.
 
+### How to Run the Frontend
+
+1. In `frontend`, run `npm install` and then `npm run dev`.
+2. Open the shown address (for example `http://localhost:5173`) in two browser tabs. Move with the arrow keys, W A S D, or by clicking on the office.
+
 ### Next Steps
 
 - Coordinate with the frontend and WebRTC/audio team members to complete voice calling integration.
 - Test microphone access and WebRTC peer connection establishment between two browsers.
 - Verify offer-answer exchange, ICE candidate exchange, and actual audio communication.
-- Connect the frontend to the `nearbyAvatars` event so peer connections open and close based on proximity.
+- Use the `nearbyAvatars` event (already used to draw the earshot radius) to open and close WebRTC peer connections based on proximity.
 - Add Redis Pub/Sub so the Socket.io server can scale across multiple Node instances.
 - Improve socket event error handling and document the event flow.
 - Support final integration testing with the other team members.
-- Frontend: draw the saved obstacles on the canvas and lower audio volume behind sound-blocking obstacles.
+- Lower audio volume behind sound-blocking obstacles (the obstacles are already saved and drawn on the canvas).
 
 ## Project Status
 In development. Features listed above represent the planned scope and may change as implementation progresses.
