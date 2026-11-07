@@ -106,7 +106,51 @@ async function findUsersWithinCircleMongo(Avatar, center, radius = PROXIMITY_RAD
   }));
 }
 
+// Does the straight line between a and b cross the rectangle? (Liang-Barsky)
+function segmentIntersectsRect(a, b, rect) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const p = [-dx, dx, -dy, dy];
+  const q = [
+    a.x - rect.x,
+    rect.x + rect.width - a.x,
+    a.y - rect.y,
+    rect.y + rect.height - a.y,
+  ];
+
+  let t0 = 0;
+  let t1 = 1;
+
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0) {
+      if (q[i] < 0) return false; // parallel to this edge and outside
+    } else {
+      const r = q[i] / p[i];
+
+      if (p[i] < 0) {
+        if (r > t1) return false;
+        if (r > t0) t0 = r;
+      } else {
+        if (r < t0) return false;
+        if (r < t1) t1 = r;
+      }
+    }
+  }
+
+  return true;
+}
+
+// True when a sound-blocking obstacle lies between the two avatars.
+function isSoundBlocked(a, b, obstacles) {
+  return obstacles.some(
+    (obstacle) =>
+      obstacle.blocksSound !== false && segmentIntersectsRect(a, b, obstacle)
+  );
+}
+
 module.exports = {
+  segmentIntersectsRect,
+  isSoundBlocked,
   PROXIMITY_RADIUS_PX,
   pixelDistance,
   findNearbyInMemory,
@@ -115,6 +159,5 @@ module.exports = {
   findUsersWithinCircleInMemory,
   findUsersWithinCircleMongo,
 };
-
 
 
