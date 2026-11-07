@@ -21,6 +21,7 @@ function App() {
   const otherPlayersRef = useRef({});
   const keysRef = useRef(new Set());
   const nearbyRef = useRef(new Set()); // userIds within 100 px (from the server)
+  const blockedRef = useRef(new Set()); // nearby users behind a sound-blocking obstacle
   const obstaclesRef = useRef([]); // saved room obstacles (from the server)
   const targetRef = useRef(null); // click-to-move target {x, y}
   const displayRef = useRef({}); // smoothed positions of other users
@@ -54,6 +55,7 @@ function App() {
       otherPlayersRef.current = {};
       nearbyRef.current = new Set();
       setConnectedUsers([]);
+      blockedRef.current = new Set();
       setPlayerCount(1);
 
       console.log("Disconnected from ProxiSpeak");
@@ -121,6 +123,14 @@ function App() {
       nearbyRef.current = new Set(
         list
           .filter((item) => item && typeof item.userId === "string")
+          .map((item) => item.userId)
+      );
+      blockedRef.current = new Set(
+        list
+          .filter(
+            (item) =>
+              item && typeof item.userId === "string" && item.blocked === true
+          )
           .map((item) => item.userId)
       );
     }
@@ -327,7 +337,10 @@ function App() {
           const position = displayRef.current[userId] || target;
 
           if (nearbyRef.current.has(userId)) {
-            ctx.strokeStyle = "#16a34a";
+            // Green ring = can hear, orange ring = behind a sound-blocking obstacle.
+            ctx.strokeStyle = blockedRef.current.has(userId)
+              ? "#f97316"
+              : "#16a34a";
             ctx.lineWidth = 3;
             ctx.beginPath();
             ctx.arc(position.x, position.y - 3, 30, 0, Math.PI * 2);
