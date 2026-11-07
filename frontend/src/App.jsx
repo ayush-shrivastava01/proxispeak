@@ -1,6 +1,6 @@
-
 import { useEffect, useRef, useState } from "react";
 import { socket } from "./socket";
+import { createProximityAudio } from "./proximityAudio";
 import "./App.css";
 
 const WIDTH = 900;
@@ -22,6 +22,7 @@ function App() {
   const keysRef = useRef(new Set());
   const nearbyRef = useRef(new Set()); // userIds within 100 px (from the server)
   const blockedRef = useRef(new Set()); // nearby users behind a sound-blocking obstacle
+  const audioRef = useRef(null); // proximity audio (WebRTC), created when the mic is turned on
   const obstaclesRef = useRef([]); // saved room obstacles (from the server)
   const targetRef = useRef(null); // click-to-move target {x, y}
   const displayRef = useRef({}); // smoothed positions of other users
@@ -29,6 +30,8 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [playerCount, setPlayerCount] = useState(1);
   const [connectedUsers, setConnectedUsers] = useState([]);
+  const [micOn, setMicOn] = useState(false);
+  const [micError, setMicError] = useState("");
 
   function syncConnectedUsers() {
     setConnectedUsers(
@@ -112,6 +115,7 @@ function App() {
       if (!data || typeof data.userId !== "string") return;
 
       delete otherPlayersRef.current[data.userId];
+      audioRef.current?.removeUser(data.userId);
       syncConnectedUsers();
 
       console.log("Avatar left:", data.userId);
@@ -133,12 +137,25 @@ function App() {
           )
           .map((item) => item.userId)
       );
+      audioRef.current?.handleNearby(list);
     }
 
     function handleRoomLayout(room) {
       obstaclesRef.current = Array.isArray(room?.obstacles)
         ? room.obstacles
         : [];
+    }
+
+    function handleOffer(data) {
+      audioRef.current?.handleOffer(data);
+    }
+
+    function handleAnswer(data) {
+      audioRef.current?.handleAnswer(data);
+    }
+
+    function handleIceCandidate(data) {
+      audioRef.current?.handleCandidate(data);
     }
 
     socket.on("connect", handleConnect);
@@ -148,6 +165,9 @@ function App() {
     socket.on("avatarLeft", handleAvatarLeft);
     socket.on("nearbyAvatars", handleNearbyAvatars);
     socket.on("roomLayout", handleRoomLayout);
+    socket.on("webrtc-offer", handleOffer);
+    socket.on("webrtc-answer", handleAnswer);
+    socket.on("webrtc-ice-candidate", handleIceCandidate);
 
     socket.connect();
 
@@ -163,6 +183,11 @@ function App() {
       socket.off("avatarLeft", handleAvatarLeft);
       socket.off("nearbyAvatars", handleNearbyAvatars);
       socket.off("roomLayout", handleRoomLayout);
+      socket.off("webrtc-offer", handleOffer);
+      socket.off("webrtc-answer", handleAnswer);
+      socket.off("webrtc-ice-candidate", handleIceCandidate);
+      audioRef.current?.stop();
+      audioRef.current = null;
       socket.disconnect();
     };
   }, []);
@@ -478,6 +503,35 @@ function App() {
       keys.clear();
     };
   }, []);
+  
+    // Turn the microphone (and proximity audio) on or off.
+  async function toggleMic() {
+    if (audioRef.current) {
+      audioRef.current.stop();
+      audioRef.current = null;
+      setMicOn(false);
+      return;
+    }
+
+    try {
+      const audio = createProximityAudio({
+        socket,
+        getMe: () => playerRef.current,
+        getOther: (userId) =>
+          displayRef.current[userId] || otherPlayersRef.current[userId] || null,
+      });
+
+      await audio.start();
+      audioRef.current = audio;
+      setMicOn(true);
+      setMicError("");
+
+      // Ask the server who is nearby right now, to start the connections.
+      socket.emit("getNearbyAvatars");
+    } catch (error) {
+      setMicError(`Microphone not available: ${error.message || error.name}`);
+    }
+  }
 
   return (
     <main className="app">
@@ -532,6 +586,17 @@ function App() {
         <p className="controls">
           <strong>Move:</strong> Arrow keys or W, A, S, D
         </p>
+        
+        <p className="controls">
+          <button type="button" onClick={toggleMic}>
+            {micOn ? "Turn microphone off" : "Turn microphone on"}
+          </button>
+        </p>
+        {micError && (
+          <p className="controls" style={{ color: "#b42318" }}>
+            {micError}
+          </p>
+        )}
       </section>
 
       <section className="connected-users">
