@@ -33,6 +33,7 @@ test(
         ...process.env,
         PORT: String(TEST_PORT),
         MONGODB_URI: "",
+        REDIS_URL: "",
       },
       
       stdio: ["ignore", "pipe", "pipe"],

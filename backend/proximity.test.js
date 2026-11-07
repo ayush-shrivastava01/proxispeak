@@ -52,7 +52,7 @@ function waitFor(socket, eventName, predicate = () => true, timeout = 4000) {
 
 test("signaling is blocked outside 100 px and allowed inside", async () => {
   const child = spawn(process.execPath, [path.join(__dirname, "server.js")], {
-    env: { ...process.env, PORT: String(TEST_PORT), MONGODB_URI: "" },
+    env: { ...process.env, PORT: String(TEST_PORT), MONGODB_URI: "", REDIS_URL: "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 

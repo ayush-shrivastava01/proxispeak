@@ -46,7 +46,7 @@ test("room store saves and loads a room (memory mode)", async () => {
 test("server saves a room over sockets and sends it to a new user", async () => {
   const port = 5103;
   const child = spawn(process.execPath, [path.join(__dirname, "server.js")], {
-    env: { ...process.env, PORT: String(port), MONGODB_URI: "" },
+    env: { ...process.env, PORT: String(port), MONGODB_URI: "", REDIS_URL: "" },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
