@@ -15,7 +15,12 @@ const {
   findClustersInMemory,
   findUsersWithinCircleInMemory,
   findUsersWithinCircleMongo,
+  isSoundBlocked,
 } = require("./proximity");
+const {
+  createMemoryPositionStore,
+  createRedisPositionStore,
+} = require("./positionStore");
 const {
   DEFAULT_ROOM_ID,
   ROOM_ID_PATTERN,
@@ -44,13 +49,17 @@ const MONGODB_URI = process.env.MONGODB_URI;
 const WORLD_WIDTH = 900;
 const WORLD_HEIGHT = 600;
 const PROXIMITY_THROTTLE_MS = 100;
+// A client may not send avatar positions faster than about 60 per second.
+const MIN_MOVE_INTERVAL_MS = 15;
 
 // Legacy lat/long nearby feature (kept so older clients keep working).
 const NEARBY_DISTANCE_KM = 1;
 
-// Latest avatar positions in memory (authoritative for broadcasting and for
-// deciding who may exchange WebRTC signaling messages).
-const avatars = new Map();
+// Latest avatar positions. Kept in memory, or in Redis when REDIS_URL is set
+// so that several server processes share the same positions.
+let positionStore = createMemoryPositionStore();
+// Sound-blocking obstacles of the default room (refreshed when a room is saved).
+let soundObstacles = [];
 // Latest shared latitude/longitude (legacy feature).
 const users = new Map();
 // userId -> Set of userIds currently inside that user's earshot radius.
@@ -83,7 +92,9 @@ async function connectDatabase() {
     await Avatar.init(); // make sure the 2d geospatial index exists
     Room = require("./models/Room");
     await Room.init();
-    await Avatar.deleteMany({}); // clear stale avatars from a previous run
+    // Clear stale avatars from a previous run (only when this is the only
+    // server process; with Redis another process may still be using them).
+    if (!process.env.REDIS_URL) await Avatar.deleteMany({});
 
     mongoose.connection.on("disconnected", () => {
       dbReady = false;
@@ -107,6 +118,22 @@ async function connectDatabase() {
 // ---------------------------------------------------------------------------
 // Proximity (pixel based, 100 px radius by default)
 // ---------------------------------------------------------------------------
+function refreshObstacles(room) {
+  soundObstacles = Array.isArray(room?.obstacles) ? room.obstacles : [];
+}
+
+// Adds `blocked: true` when a sound-blocking obstacle lies between two users.
+function addBlockedFlag(positions, position, list) {
+  return list.map((item) => {
+    const other = positions.get(item.userId);
+
+    return {
+      ...item,
+      blocked: other ? isSoundBlocked(position, other, soundObstacles) : false,
+    };
+  });
+}
+
 async function findNearby(userId, position) {
   if (dbReady && Avatar) {
     try {
@@ -121,17 +148,20 @@ async function findNearby(userId, position) {
     }
   }
 
-  return findNearbyInMemory(avatars, userId, position);
+  return findNearbyInMemory(await positionStore.all(), userId, position);
 }
 
 // Recalculate who is near `userId`, tell that user, and tell every user whose
 // "nearby" membership changed because of this movement.
 async function refreshProximity(userId) {
-  const position = avatars.get(userId);
+  const position = await positionStore.get(userId);
   if (!position) return;
 
-  const nearby = await findNearby(userId, position);
-  if (!avatars.has(userId)) return; // user left while the query was running
+  const found = await findNearby(userId, position);
+  const positions = await positionStore.all();
+  if (!positions.has(userId)) return; // user left while the query was running
+
+  const nearby = addBlockedFlag(positions, position, found);
 
   const newSet = new Set(nearby.map((item) => item.userId));
   const oldSet = nearbySets.get(userId) || new Set();
@@ -144,10 +174,14 @@ async function refreshProximity(userId) {
   for (const id of oldSet) if (!newSet.has(id)) changed.add(id);
 
   for (const otherId of changed) {
-    const otherPosition = avatars.get(otherId);
+    const otherPosition = positions.get(otherId);
     if (!otherPosition) continue;
 
-    const otherNearby = findNearbyInMemory(avatars, otherId, otherPosition);
+    const otherNearby = addBlockedFlag(
+      positions,
+      otherPosition,
+      findNearbyInMemory(positions, otherId, otherPosition)
+    );
     nearbySets.set(otherId, new Set(otherNearby.map((item) => item.userId)));
     io.to(otherId).emit("nearbyAvatars", otherNearby);
   }
@@ -169,9 +203,12 @@ function scheduleProximity(userId) {
 }
 
 // WebRTC signaling is only allowed between users within earshot.
-function isWithinEarshot(userIdA, userIdB) {
-  const a = avatars.get(userIdA);
-  const b = avatars.get(userIdB);
+async function isWithinEarshot(userIdA, userIdB) {
+  const [a, b] = await Promise.all([
+    positionStore.get(userIdA),
+    positionStore.get(userIdB),
+  ]);
+
   return Boolean(a && b && pixelDistance(a, b) <= PROXIMITY_RADIUS_PX);
 }
 
@@ -231,20 +268,22 @@ app.get("/", (_req, res) => {
   res.send("ProxiSpeak Backend is Running!");
 });
 
-app.get("/health", (_req, res) => {
+app.get("/health", async (_req, res) => {
   res.json({
     status: "ok",
     mongodb: dbReady,
+    positionStore: positionStore.kind,
     proximityRadiusPx: PROXIMITY_RADIUS_PX,
-    avatars: avatars.size,
+    avatars: await positionStore.count(),
+    memoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
   });
 });
 
 // Proximity clusters: groups of users who can hear each other.
-app.get("/api/clusters", (_req, res) => {
+app.get("/api/clusters", async (_req, res) => {
   res.json({
     radius: PROXIMITY_RADIUS_PX,
-    clusters: findClustersInMemory(avatars),
+    clusters: findClustersInMemory(await positionStore.all()),
   });
 });
 
@@ -282,7 +321,11 @@ app.get("/api/area", async (req, res) => {
   }
 
   if (!users) {
-    users = findUsersWithinCircleInMemory(avatars, center, radius);
+    users = findUsersWithinCircleInMemory(
+      await positionStore.all(),
+      center,
+      radius
+    );
   }
 
   res.json({ center, radius, users });
@@ -308,6 +351,7 @@ app.put("/api/rooms/:roomId", async (req, res) => {
   }
 
   const room = await roomStore.save(req.params.roomId, result.value);
+  if (req.params.roomId === DEFAULT_ROOM_ID) refreshObstacles(room);
   io.emit("roomLayout", room);
   res.json(room);
 });
@@ -315,29 +359,25 @@ app.put("/api/rooms/:roomId", async (req, res) => {
 // ---------------------------------------------------------------------------
 // Socket.io
 // ---------------------------------------------------------------------------
-function currentAvatarList() {
-  return Array.from(avatars.entries()).map(([userId, position]) => ({
+async function currentAvatarList() {
+  const positions = await positionStore.all();
+
+  return Array.from(positions.entries()).map(([userId, position]) => ({
     userId,
     x: position.x,
     y: position.y,
   }));
 }
 
-// Forward a WebRTC signaling message only when the target exists and is
-// within earshot of the sender.
-function forwardSignal(socket, eventName, payloadKey, payload = {}) {
+// Forward a WebRTC signaling message only when the target is within earshot
+// of the sender.
+async function forwardSignal(socket, eventName, payloadKey, payload = {}) {
   const { targetUserId } = payload;
   const data = payload[payloadKey];
 
-  if (
-    typeof targetUserId !== "string" ||
-    !data ||
-    !io.sockets.sockets.has(targetUserId)
-  ) {
-    return;
-  }
+  if (typeof targetUserId !== "string" || !data) return;
 
-  if (!isWithinEarshot(socket.id, targetUserId)) {
+  if (!(await isWithinEarshot(socket.id, targetUserId))) {
     socket.emit("webrtc-out-of-range", { targetUserId });
     return;
   }
@@ -354,34 +394,39 @@ io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
   console.log("Total connected users:", io.engine.clientsCount);
 
+  let lastMoveAt = 0;
+
+  // Event handlers are registered right away; the avatar itself is created
+  // asynchronously, so handlers that need it wait for `ready`.
+  const ready = (async () => {
+    // Send existing avatars to the newly connected user.
+    socket.emit("currentAvatars", await currentAvatarList());
+
+    // Register and announce the new user's avatar.
+    const initialPosition = { x: 450, y: 300 };
+    await positionStore.set(socket.id, initialPosition);
+
+    socket.broadcast.emit("avatarMoved", {
+      userId: socket.id,
+      x: initialPosition.x,
+      y: initialPosition.y,
+    });
+    scheduleProximity(socket.id);
+
+    // Send the saved office layout to the new user.
+    socket.emit("roomLayout", await roomStore.load(DEFAULT_ROOM_ID));
+  })().catch((error) =>
+    console.error("Failed to initialize user:", error.message)
+  );
+
   // Send the IDs of other currently connected users.
-  socket.on("getConnectedUsers", () => {
-    const connectedUsers = Array.from(io.sockets.sockets.keys()).filter(
-      (userId) => userId !== socket.id
-    );
+  socket.on("getConnectedUsers", async () => {
+    const connectedUsers = Array.from(await currentAvatarList())
+      .map((avatar) => avatar.userId)
+      .filter((userId) => userId !== socket.id);
 
     socket.emit("connectedUsers", connectedUsers);
   });
-
-  // Send existing avatars to the newly connected user.
-  socket.emit("currentAvatars", currentAvatarList());
-
-  // Register and announce the new user's avatar.
-  const initialPosition = { x: 450, y: 300 };
-  avatars.set(socket.id, initialPosition);
-
-  socket.broadcast.emit("avatarMoved", {
-    userId: socket.id,
-    x: initialPosition.x,
-    y: initialPosition.y,
-  });
-  scheduleProximity(socket.id);
-
-  // Send the saved office layout to the new user.
-  roomStore
-    .load(DEFAULT_ROOM_ID)
-    .then((room) => socket.emit("roomLayout", room))
-    .catch((error) => console.error("Failed to load room:", error.message));
 
   // Load a saved room layout.
   socket.on("getRoomLayout", async (payload = {}) => {
@@ -410,43 +455,53 @@ io.on("connection", (socket) => {
       return;
     }
 
-    io.emit("roomLayout", await roomStore.save(roomId, result.value));
+    const room = await roomStore.save(roomId, result.value);
+    if (roomId === DEFAULT_ROOM_ID) refreshObstacles(room);
+    io.emit("roomLayout", room);
   });
 
   // Send the current avatar list when requested by the frontend.
-  socket.on("getAvatars", () => {
-    socket.emit("currentAvatars", currentAvatarList());
+  socket.on("getAvatars", async () => {
+    socket.emit("currentAvatars", await currentAvatarList());
   });
 
   // Current list of users inside earshot (pixel radius).
   socket.on("getNearbyAvatars", async () => {
-    const position = avatars.get(socket.id);
+    await ready;
+    const position = await positionStore.get(socket.id);
     if (!position) return;
 
-    socket.emit("nearbyAvatars", await findNearby(socket.id, position));
+    const found = await findNearby(socket.id, position);
+    socket.emit(
+      "nearbyAvatars",
+      addBlockedFlag(await positionStore.all(), position, found)
+    );
   });
 
-    // Proximity clusters (groups of users within earshot of each other).
-  socket.on("getClusters", () => {
+  // Proximity clusters (groups of users within earshot of each other).
+  socket.on("getClusters", async () => {
     socket.emit("proximityClusters", {
       radius: PROXIMITY_RADIUS_PX,
-      clusters: findClustersInMemory(avatars),
+      clusters: findClustersInMemory(await positionStore.all()),
     });
   });
 
   // WebRTC signaling (only within earshot).
-  socket.on("webrtc-offer", (payload) =>
-    forwardSignal(socket, "webrtc-offer", "offer", payload)
-  );
-  socket.on("webrtc-answer", (payload) =>
-    forwardSignal(socket, "webrtc-answer", "answer", payload)
-  );
-  socket.on("webrtc-ice-candidate", (payload) =>
-    forwardSignal(socket, "webrtc-ice-candidate", "candidate", payload)
-  );
+  socket.on("webrtc-offer", async (payload) => {
+    await ready;
+    await forwardSignal(socket, "webrtc-offer", "offer", payload);
+  });
+  socket.on("webrtc-answer", async (payload) => {
+    await ready;
+    await forwardSignal(socket, "webrtc-answer", "answer", payload);
+  });
+  socket.on("webrtc-ice-candidate", async (payload) => {
+    await ready;
+    await forwardSignal(socket, "webrtc-ice-candidate", "candidate", payload);
+  });
 
   // Handle avatar movement and store the latest position.
-  socket.on("moveAvatar", (position) => {
+  socket.on("moveAvatar", async (position) => {
     if (
       !position ||
       typeof position.x !== "number" ||
@@ -457,12 +512,18 @@ io.on("connection", (socket) => {
       return;
     }
 
+    // Simple rate limit: ignore positions that arrive too quickly.
+    const now = Date.now();
+    if (now - lastMoveAt < MIN_MOVE_INTERVAL_MS) return;
+    lastMoveAt = now;
+
     const safePosition = {
       x: Math.max(0, Math.min(WORLD_WIDTH, position.x)),
       y: Math.max(0, Math.min(WORLD_HEIGHT, position.y)),
     };
 
-    avatars.set(socket.id, safePosition);
+    await ready;
+    await positionStore.set(socket.id, safePosition);
 
     socket.broadcast.emit("avatarMoved", {
       userId: socket.id,
@@ -499,32 +560,47 @@ io.on("connection", (socket) => {
   });
 
   // Remove the disconnected user's data and notify other clients.
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     clearTimeout(proximityTimers.get(socket.id));
     proximityTimers.delete(socket.id);
 
     users.delete(socket.id);
-    avatars.delete(socket.id);
 
     const previouslyNearby = nearbySets.get(socket.id) || new Set();
     nearbySets.delete(socket.id);
 
-    if (dbReady && Avatar) {
-      Avatar.deleteOne({ userId: socket.id }).catch((error) =>
-        console.error("Failed to delete avatar:", error.message)
-      );
-    }
+    try {
+      await ready;
+      await positionStore.delete(socket.id);
 
-    socket.broadcast.emit("avatarLeft", { userId: socket.id });
+      if (dbReady && Avatar) {
+        Avatar.deleteOne({ userId: socket.id }).catch((error) =>
+          console.error("Failed to delete avatar:", error.message)
+        );
+      }
 
-    // Users who could hear the leaving user get an updated list.
-    for (const otherId of previouslyNearby) {
-      const otherPosition = avatars.get(otherId);
-      if (!otherPosition) continue;
+      socket.broadcast.emit("avatarLeft", { userId: socket.id });
 
-      const otherNearby = findNearbyInMemory(avatars, otherId, otherPosition);
-      nearbySets.set(otherId, new Set(otherNearby.map((item) => item.userId)));
-      io.to(otherId).emit("nearbyAvatars", otherNearby);
+      // Users who could hear the leaving user get an updated list.
+      const positions = await positionStore.all();
+
+      for (const otherId of previouslyNearby) {
+        const otherPosition = positions.get(otherId);
+        if (!otherPosition) continue;
+
+        const otherNearby = addBlockedFlag(
+          positions,
+          otherPosition,
+          findNearbyInMemory(positions, otherId, otherPosition)
+        );
+        nearbySets.set(
+          otherId,
+          new Set(otherNearby.map((item) => item.userId))
+        );
+        io.to(otherId).emit("nearbyAvatars", otherNearby);
+      }
+    } catch (error) {
+      console.error("Disconnect cleanup failed:", error.message);
     }
 
     refreshNearbyUsers();
@@ -532,8 +608,97 @@ io.on("connection", (socket) => {
   });
 });
 
-connectDatabase().finally(() => {
+// ---------------------------------------------------------------------------
+// Redis (optional): shares Socket.io events and avatar positions between
+// several server processes. Set REDIS_URL to enable it.
+// ---------------------------------------------------------------------------
+async function connectRedis() {
+  const url = process.env.REDIS_URL;
+
+  if (!url) {
+    console.log("REDIS_URL not set. Running as a single server process.");
+    return;
+  }
+
+  try {
+    const { createClient } = require("redis");
+    const { createAdapter } = require("@socket.io/redis-adapter");
+
+    const publisher = createClient({ url });
+    const subscriber = publisher.duplicate();
+    publisher.on("error", (error) => console.error("Redis error:", error.message));
+    subscriber.on("error", (error) => console.error("Redis error:", error.message));
+
+    await Promise.all([publisher.connect(), subscriber.connect()]);
+
+    io.adapter(createAdapter(publisher, subscriber));
+    positionStore = createRedisPositionStore(publisher);
+
+    console.log("Redis connected. Socket.io events and positions are shared.");
+  } catch (error) {
+    console.error(
+      "Redis connection failed. Running as a single server process:",
+      error.message
+    );
+  }
+}
+
+// Remove this process's avatars from the shared store when it stops.
+async function shutdown() {
+  try {
+    await Promise.all(
+      Array.from(io.sockets.sockets.keys()).map((id) => positionStore.delete(id))
+    );
+  } catch (error) {
+    console.error("Shutdown cleanup failed:", error.message);
+  }
+
+  process.exit(0);
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+// Remove avatars whose user is no longer connected (for example after a
+// server process was killed without cleaning up).
+async function removeGhostAvatars() {
+  try {
+    const sockets = await io.fetchSockets(); // includes other processes with Redis
+    const live = new Set(sockets.map((socket) => socket.id));
+    const positions = await positionStore.all();
+
+    for (const userId of positions.keys()) {
+      if (!live.has(userId)) await positionStore.delete(userId);
+    }
+
+    if (dbReady && Avatar) {
+      await Avatar.deleteMany({ userId: { $nin: Array.from(live) } });
+    }
+  } catch (error) {
+    console.error("Ghost cleanup failed:", error.message);
+  }
+}
+
+async function start() {
+  await connectDatabase();
+  await connectRedis();
+
+  await removeGhostAvatars();
+  setInterval(removeGhostAvatars, 30000).unref();
+
+  // Keep the sound-blocking obstacles in sync (other processes may save rooms).
+  const loadObstacles = () =>
+    roomStore
+      .load(DEFAULT_ROOM_ID)
+      .then(refreshObstacles)
+      .catch((error) => console.error("Failed to load obstacles:", error.message));
+
+  await loadObstacles();
+  setInterval(loadObstacles, 10000).unref();
+
   server.listen(PORT, () => {
     console.log(`ProxiSpeak server running on port ${PORT}`);
   });
-});
+}
+
+start();
