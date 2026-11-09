@@ -83,6 +83,7 @@ This project is being developed collaboratively by a team of five members.
 - Added automatic cleanup of avatars whose user is no longer connected, and a `clear-redis.js` script for a manual cleanup.
 - Added a 50-user load test (`npm run loadtest`) and extended `/health` with the position store type and the server memory.
 - Frontend: the canvas shows the 100 px earshot radius, a green ring around users who can be heard, an orange ring around users behind an obstacle, and the saved obstacles; avatars can also be moved by clicking, and other avatars move smoothly.
+- Frontend: a proximity audio module (`frontend/src/proximityAudio.js`) with a microphone button. It opens WebRTC audio connections with users within earshot, sets the volume by distance, pans left/right by position and lowers the volume for users behind sound-blocking obstacles. Verified with two browser tabs: the voice is heard when the avatars are close and stops when they move apart.
 
 ### Testing Status
 
@@ -95,9 +96,10 @@ This project is being developed collaboratively by a team of five members.
 - A 50-user load test connected all 50 users without failure (see "Load Test" below).
 - Verified with two browser tabs that avatar movement still synchronizes after the MongoDB and proximity changes.
 - Verified in two browser tabs that the earshot radius, green ring, saved obstacles and click-to-move work.
+- Verified with two browser tabs that proximity audio works end to end (microphone, WebRTC connection, volume by distance).
 
 
-**Note:** Basic WebRTC signaling message relaying has been implemented and tested on the backend. A complete WebRTC audio connection between two browsers has not yet been verified end to end. The audio modules of the WebRTC/audio team member are on the `shreya-webrtc-audio` branch and are not yet connected to the application.
+**Note:** Basic WebRTC signaling and the proximity audio have been implemented and verified with two browser tabs on one computer. The audio modules of the WebRTC/audio team member (`shreya-webrtc-audio` branch, `audio/`) are not used by the application.
 
 ### Proximity Performance (Mid Review audit)
 
@@ -187,11 +189,7 @@ Current limitation: Redis has been connected and used by a single server process
 
 ### Next Steps
 
-- Coordinate with the frontend and WebRTC/audio team members to complete voice calling integration.
-- Test microphone access and WebRTC peer connection establishment between two browsers.
-- Verify offer-answer exchange, ICE candidate exchange, and actual audio communication.
-- Use the `nearbyAvatars` event (already used to draw the earshot radius) to open and close WebRTC peer connections based on proximity.
-- Lower audio volume for users behind sound-blocking obstacles (the server already sends the `blocked` flag and the canvas shows an orange ring).
+- Test the proximity audio between two different computers (different networks may need a TURN server).
 - Run two server processes together with Redis and verify that proximity and signaling work across them.
 - Improve socket event error handling and document the event flow.
 - Support final integration testing with the other team members.
