@@ -22,6 +22,7 @@ function App() {
   const keysRef = useRef(new Set());
   const nearbyRef = useRef(new Set()); // userIds within 100 px (from the server)
   const blockedRef = useRef(new Set()); // nearby users behind a sound-blocking obstacle
+  const fpsRef = useRef(0); // frames per second of the canvas
   const audioRef = useRef(null); // proximity audio (WebRTC), created when the mic is turned on
   const obstaclesRef = useRef([]); // saved room obstacles (from the server)
   const targetRef = useRef(null); // click-to-move target {x, y}
@@ -202,6 +203,8 @@ function App() {
     const player = playerRef.current;
 
     let animationId;
+    let frameCount = 0;
+    let fpsStartedAt = 0;
     let lastSentAt = 0;
     let lastSentX = player.x;
     let lastSentY = player.y;
@@ -355,6 +358,10 @@ function App() {
       ctx.font = "bold 14px Arial";
       ctx.textAlign = "right";
       ctx.fillText(`Nearby: ${nearbyRef.current.size}`, WIDTH - 35, 45);
+      
+      // Frames per second.
+      ctx.textAlign = "center";
+      ctx.fillText(`${fpsRef.current} FPS`, WIDTH / 2, 45);
 
       // Remote avatars (green ring = within earshot).
       Object.entries(otherPlayersRef.current).forEach(
@@ -423,6 +430,15 @@ function App() {
     }
 
     function animate(timestamp) {
+      // Count frames and update the FPS value once per second.
+      frameCount++;
+      if (timestamp - fpsStartedAt >= 1000) {
+        fpsRef.current = Math.round(
+          (frameCount * 1000) / (timestamp - fpsStartedAt)
+        );
+        frameCount = 0;
+        fpsStartedAt = timestamp;
+      }
       let dx = 0;
       let dy = 0;
 
