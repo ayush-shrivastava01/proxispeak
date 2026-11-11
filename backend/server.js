@@ -169,11 +169,11 @@ async function refreshProximity(userId) {
 
   io.to(userId).emit("nearbyAvatars", nearby);
 
-  const changed = new Set();
-  for (const id of newSet) if (!oldSet.has(id)) changed.add(id);
-  for (const id of oldSet) if (!newSet.has(id)) changed.add(id);
+  // Everyone who was or is near this user gets a fresh list, because the
+  // distances and the blocked flag change whenever this user moves.
+  const affected = new Set([...newSet, ...oldSet]);
 
-  for (const otherId of changed) {
+  for (const otherId of affected) {
     const otherPosition = positions.get(otherId);
     if (!otherPosition) continue;
 

@@ -32,7 +32,7 @@ export function createProximityAudio({ socket, getMe, getOther }) {
 
   let localStream = null;
   let audioContext = null;
-  let animationId = null;
+  let volumeTimer = null;
 
   function sendOffer(userId, peer) {
     const { pc } = peer;
@@ -41,6 +41,7 @@ export function createProximityAudio({ socket, getMe, getOther }) {
       .createOffer()
       .then((offer) => pc.setLocalDescription(offer))
       .then(() => {
+        console.log("[audio] offer sent to", userId.slice(0, 5));
         socket.emit("webrtc-offer", {
           targetUserId: userId,
           offer: pc.localDescription,
@@ -49,7 +50,30 @@ export function createProximityAudio({ socket, getMe, getOther }) {
       .catch((error) => console.error("Could not create offer:", error));
   }
 
-  function attachRemoteStream(peer, stream) {
+  // Set volume and balance of one connected user right now.
+  function applyVolume(userId, peer, immediate = false) {
+    if (!peer.gain) return;
+
+    const other = getOther(userId);
+    if (!other) return;
+
+    const { gain, pan } = computeAudioParams(
+      getMe(),
+      other,
+      nearby.get(userId)
+    );
+
+    if (immediate) {
+      peer.gain.gain.value = gain;
+      if (peer.pan) peer.pan.pan.value = pan;
+    } else {
+      const now = audioContext.currentTime;
+      peer.gain.gain.setTargetAtTime(gain, now, 0.05);
+      peer.pan?.pan.setTargetAtTime(pan, now, 0.05);
+    }
+  }
+
+  function attachRemoteStream(userId, peer, stream) {
     // Chrome only delivers a remote stream to Web Audio if it is also attached
     // to a (muted) media element.
     peer.element = new Audio();
@@ -69,6 +93,9 @@ export function createProximityAudio({ socket, getMe, getOther }) {
     } else {
       peer.gain.connect(audioContext.destination);
     }
+
+    console.log("[audio] receiving audio from", userId.slice(0, 5));
+    applyVolume(userId, peer, true);
   }
 
   function ensurePeer(userId) {
@@ -97,8 +124,12 @@ export function createProximityAudio({ socket, getMe, getOther }) {
 
     pc.ontrack = (event) => {
       if (!peer.source && event.streams[0]) {
-        attachRemoteStream(peer, event.streams[0]);
+        attachRemoteStream(userId, peer, event.streams[0]);
       }
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log("[audio] connection with", userId.slice(0, 5), "is", pc.connectionState);
     };
 
     peers.set(userId, peer);
@@ -172,6 +203,8 @@ export function createProximityAudio({ socket, getMe, getOther }) {
   async function handleOffer({ senderUserId, offer } = {}) {
     if (!localStream || !senderUserId || !offer) return; // microphone is off
 
+    console.log("[audio] offer received from", senderUserId.slice(0, 5));
+
     const peer = ensurePeer(senderUserId);
     if (peer.lastOfferSdp === offer.sdp) return; // repeated offer
     peer.lastOfferSdp = offer.sdp;
@@ -183,6 +216,7 @@ export function createProximityAudio({ socket, getMe, getOther }) {
       const answer = await peer.pc.createAnswer();
       await peer.pc.setLocalDescription(answer);
 
+      console.log("[audio] answer sent to", senderUserId.slice(0, 5));
       socket.emit("webrtc-answer", {
         targetUserId: senderUserId,
         answer: peer.pc.localDescription,
@@ -231,24 +265,10 @@ export function createProximityAudio({ socket, getMe, getOther }) {
     }
   }
 
-  // Update volume and balance of every connected user, once per frame.
+  // Update volume and balance of every connected user. A timer is used instead
+  // of requestAnimationFrame because hidden tabs do not run animation frames.
   function updateVolumes() {
-    const me = getMe();
-
-    peers.forEach((peer, userId) => {
-      if (!peer.gain) return;
-
-      const other = getOther(userId);
-      if (!other) return;
-
-      const { gain, pan } = computeAudioParams(me, other, nearby.get(userId));
-      const now = audioContext.currentTime;
-
-      peer.gain.gain.setTargetAtTime(gain, now, 0.05);
-      peer.pan?.pan.setTargetAtTime(pan, now, 0.05);
-    });
-
-    animationId = requestAnimationFrame(updateVolumes);
+    peers.forEach((peer, userId) => applyVolume(userId, peer));
   }
 
   async function start() {
@@ -259,11 +279,12 @@ export function createProximityAudio({ socket, getMe, getOther }) {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
     await audioContext.resume();
 
-    animationId = requestAnimationFrame(updateVolumes);
+    volumeTimer = setInterval(updateVolumes, 50);
+    console.log("[audio] microphone on, audio context:", audioContext.state);
   }
 
   function stop() {
-    cancelAnimationFrame(animationId);
+    clearInterval(volumeTimer);
 
     Array.from(peers.keys()).forEach(closePeer);
     nearby.clear();

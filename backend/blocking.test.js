@@ -145,6 +145,14 @@ test("nearbyAvatars marks users behind a sound-blocking obstacle as blocked", as
       (list) => list.some((item) => item.userId === b.id && item.blocked === false)
     );
     assert.ok(clearList.length >= 1);
+    
+    // B did not move, but must also see that the wall is no longer between them.
+    const clearForB = await waitFor(
+      b,
+      "nearbyAvatars",
+      (list) => list.some((item) => item.userId === a.id && item.blocked === false)
+    );
+    assert.ok(clearForB.length >= 1);
   } finally {
     a?.close();
     b?.close();
