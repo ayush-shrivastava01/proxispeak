@@ -32,6 +32,7 @@ function App() {
   const [playerCount, setPlayerCount] = useState(1);
   const [connectedUsers, setConnectedUsers] = useState([]);
   const [micOn, setMicOn] = useState(false);
+  const [muted, setMuted] = useState(false);
   const [micError, setMicError] = useState("");
 
   function syncConnectedUsers() {
@@ -519,6 +520,14 @@ function App() {
       keys.clear();
     };
   }, []);
+
+    // Mute or unmute your own microphone (you still hear others).
+  function toggleMute() {
+    if (!audioRef.current) return;
+
+    audioRef.current.setMuted(!muted);
+    setMuted(!muted);
+  }
   
     // Turn the microphone (and proximity audio) on or off.
   async function toggleMic() {
@@ -526,6 +535,7 @@ function App() {
       audioRef.current.stop();
       audioRef.current = null;
       setMicOn(false);
+      setMuted(false);
       return;
     }
 
@@ -606,7 +616,12 @@ function App() {
         <p className="controls">
           <button type="button" onClick={toggleMic}>
             {micOn ? "Turn microphone off" : "Turn microphone on"}
-          </button>
+          </button>{" "}
+          {micOn && (
+            <button type="button" onClick={toggleMute}>
+              {muted ? "Unmute" : "Mute"}
+            </button>
+          )}
         </p>
         {micError && (
           <p className="controls" style={{ color: "#b42318" }}>
