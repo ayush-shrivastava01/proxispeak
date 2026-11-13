@@ -84,6 +84,7 @@ This project is being developed collaboratively by a team of five members.
 - Added a 50-user load test (`npm run loadtest`) and extended `/health` with the position store type and the server memory.
 - Frontend: the canvas shows the 100 px earshot radius, a green ring around users who can be heard, an orange ring around users behind an obstacle, and the saved obstacles; avatars can also be moved by clicking, and other avatars move smoothly.
 - Frontend: a proximity audio module (`frontend/src/proximityAudio.js`) with a microphone button. It opens WebRTC audio connections with users within earshot, sets the volume by distance, pans left/right by position and lowers the volume for users behind sound-blocking obstacles. Verified with two browser tabs: the voice is heard when the avatars are close and stops when they move apart.
+- Pull Request #1 (`soumi-bera-realtime`) was merged into `main` on 12 November 2026.
 
 ### Testing Status
 
@@ -193,7 +194,7 @@ Current limitation: Redis has been connected and used by a single server process
 - Run two server processes together with Redis and verify that proximity and signaling work across them.
 - Improve socket event error handling and document the event flow.
 - Support final integration testing with the other team members.
-- Merge the individual branches into `main` after mentor approval.
+- Merge the remaining branches of the other team members (`shreya-webrtc-audio`, `ayush-frontend`) into `main` if the mentor approves.
 
 ## Project Status
 In development. Features listed above represent the planned scope and may change as implementation progresses.
